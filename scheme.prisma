@@ -52,6 +52,9 @@ model User {
   BrandIntelligence      BrandIntelligence?
   BrandInsight           BrandInsight[]
   BrandSignalSuggestion  BrandSignalSuggestion[]
+  IdeaInteraction        IdeaInteraction[]
+  IcpCanister            IcpCanister[]
+  IcpProofAudit          IcpProofAudit[]
 }
 
 model Account {
@@ -192,9 +195,69 @@ model UserSettings {
   fetchFrequency               String    @default("manual") // manual, hourly, daily, weekly
   emailAlertsEnabled           Boolean   @default(false)
   emailAlertsPriorityThreshold Int       @default(8) // 1-10 scale, default to 8 (high priority)
+  // Proactive assistant preferences
+  curiosityLevel               String    @default("smart") // low, smart, high
+  quietHoursStart              String    @default("21:00") // 24h format HH:MM (local preference)
+  quietHoursEnd                String    @default("08:00") // 24h format HH:MM (local preference)
+  dailyNudgeCap                Int       @default(1)
+  lastNudgeAt                  DateTime?
+  enablePostActionCheckins     Boolean   @default(true)
+  enableWeeklyIdeaSprint       Boolean   @default(true)
+  weeklyIdeaSprintDay          String    @default("MON") // MON, TUE, ...
+  weeklyIdeaSprintTime         String    @default("09:00") // 24h format HH:MM
+  viralThreadsVisibility       String    @default("VISIBLE")
+  ideasBetaEnabled             Boolean   @default(false)
+  // Alerts
   lastAlertSentAt              DateTime? // To prevent duplicate alerts
   createdAt                    DateTime  @default(now())
   updatedAt                    DateTime  @updatedAt
+}
+
+model IdeaInteraction {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ideaId    String
+  ideaType  String
+  action    String // e.g., "dismiss", "explore", "save"
+  metadata  String? // JSON string for any extra info (title, scores, etc.)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, ideaId, action])
+  @@index([userId])
+  @@index([ideaId])
+  @@index([action])
+}
+
+// ICP Integration: store user canisters and proof audits
+
+model IcpCanister {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  canisterId String
+  label      String?
+  addedAt    DateTime @default(now())
+
+  @@unique([userId, canisterId])
+  @@index([userId])
+}
+
+model IcpProofAudit {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  canisterId String
+  hash       String
+  proofUrl   String?
+  gateway    String?
+  status     String // VERIFIED, NOT_FOUND, ERROR
+  httpStatus Int?
+  details    String? // JSON string with additional info/errors
+  checkedAt  DateTime @default(now())
+
+  @@index([userId, checkedAt])
+  @@index([hash])
 }
 
 model Comment {
@@ -661,10 +724,13 @@ model BrandContext {
   communicationStyle     String? // Brand communication style and tone
   keyValues              String? // JSON array of core brand values
   visualStyle            String? // Brand visual identity description
+  brandColorPalette      String? // JSON array of hex color codes (e.g., ["#FF0000","#00FF00"])
   competitivePositioning String? // Market positioning analysis
   contentOpportunities   String? // JSON array of content opportunities
   brandVoiceKeywords     String? // JSON array of brand voice keywords
   industryContext        String? // Industry context and market analysis
+  audiencePersonas       String? // JSON array of audience personas
+  creativeGuidelines     String? // JSON object with creative/visual guidelines
   analysisStatus         String   @default("PENDING") // PENDING, RUNNING, COMPLETED, FAILED
   lastAnalyzedAt         DateTime @default(now())
   createdAt              DateTime @default(now())
@@ -1033,4 +1099,15 @@ model BrandInsight {
   @@index([userId, type, priority])
   @@index([userId, status])
   @@index([createdAt])
+}
+
+/// Maps our internal async task IDs to the external generator task IDs
+
+model ThreadGenerationTaskMapping {
+  id             String   @id @default(cuid())
+  internalTaskId String   @unique
+  externalTaskId String?
+  userId         String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 }
