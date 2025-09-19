@@ -299,6 +299,43 @@ function TrendingTopicsTab({
     });
   };
 
+  // Handler: Brainstorm with Ripple
+  const handleBrainstormWithRipple = (topic: any) => {
+    const message = `Let's brainstorm and refine this idea.
+
+Topic: ${topic.topic}
+
+Executive summary:
+${topic.executiveSummary || ""}
+
+Strategic angle:
+${topic.strategicAngle || ""}
+
+Example hook:
+${topic.exampleHook || ""}
+
+Sample post:
+${topic.samplePost || ""}
+
+Please help me polish and produce 3 stronger variations with reasons and platform-specific tweaks.`;
+    const context = {
+      type: "content_intelligence",
+      source: "trending_topic",
+      topicId: topic.id,
+      topic: topic.topic,
+      executiveSummary: topic.executiveSummary,
+      strategicAngle: topic.strategicAngle,
+      exampleHook: topic.exampleHook,
+      samplePost: topic.samplePost,
+      relevanceScore: topic.relevanceScore,
+    };
+    window.dispatchEvent(
+      new CustomEvent("open-ripple", {
+        detail: { message, context, forceFullscreen: true },
+      }),
+    );
+  };
+
   useEffect(() => {
     if (highlightedRef.current) {
       highlightedRef.current.scrollIntoView({
@@ -307,6 +344,22 @@ function TrendingTopicsTab({
       });
     }
   }, [highlightedTopicId]);
+
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const toggleExpanded = (id: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+  const sentimentColor = (s: string) => {
+    const lower = (s || "").toLowerCase();
+    if (lower === "positive") return "bg-green-500";
+    if (lower === "negative") return "bg-red-500";
+    return "bg-gray-400";
+  };
 
   console.log("[TrendingTopicsTab] Debug - topics data:", {
     topics,
@@ -438,6 +491,7 @@ function TrendingTopicsTab({
                         {new Date(search.createdAt).toLocaleString()}
                       </p>
                     </div>
+
                     <Button
                       variant="ghost"
                       size="sm"
@@ -461,32 +515,80 @@ function TrendingTopicsTab({
             topic.id === highlightedTopicId ? "ring-2 ring-primary" : ""
           }`}
         >
-          <CardHeader className="border-b bg-secondary/20 p-4">
-            <div className="flex justify-between items-start">
-              <div>
-                <CardTitle className="text-xl gradient-text">
+          <CardHeader className="p-0">
+            <div
+              className="flex items-center gap-3 p-3 cursor-pointer"
+              role="button"
+              tabIndex={0}
+              onClick={() => toggleExpanded(topic.id)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  toggleExpanded(topic.id);
+                }
+              }}
+            >
+              <span
+                className={`h-2.5 w-2.5 rounded-full ${sentimentColor(topic.sentiment)}`}
+              />
+              <div className="flex-1 min-w-0">
+                <div className="truncate text-sm md:text-base font-medium">
                   {topic.topic}
-                </CardTitle>
-                <div className="flex items-center gap-2 mt-2">
-                  <Badge
-                    variant={
-                      topic.sentiment.toLowerCase() === "positive"
-                        ? "default"
-                        : topic.sentiment.toLowerCase() === "negative"
-                          ? "destructive"
-                          : "secondary"
-                    }
-                  >
-                    {topic.sentiment}
-                  </Badge>
-                  <Badge variant="outline">
-                    Relevance: {topic.relevanceScore}/10
-                  </Badge>
                 </div>
               </div>
+              <Badge variant="outline" className="shrink-0 text-xs">
+                {Math.round(Number(topic.relevanceScore) || 0)}%
+              </Badge>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <MoreHorizontal className="h-4 w-4" />
+                    <span className="sr-only">Actions</span>
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                  align="end"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <DropdownMenuItem onClick={() => onGenerate(topic, "post")}>
+                    Create post
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => handleBrainstormWithRipple(topic)}
+                  >
+                    Brainstorm with Ripple
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => handlePostThis(topic)}
+                    disabled={
+                      postContentMutation.isLoading &&
+                      postingTopic === topic.topic
+                    }
+                  >
+                    Post This
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleScheduleThis()}>
+                    Schedule
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => handleSaveToggle(topic)}>
+                    {isTopicSaved(topic.id) ? "Unsave" : "Save"}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <ChevronDown
+                className={`h-4 w-4 text-muted-foreground transition-transform ${expandedIds.has(topic.id) ? "rotate-180" : ""}`}
+              />
             </div>
           </CardHeader>
-          <CardContent className="p-6 space-y-4">
+          <CardContent
+            className={`p-4 space-y-4 ${expandedIds.has(topic.id) ? "" : "hidden"}`}
+          >
             <div>
               <h4 className="font-semibold text-sm md:text-base mb-2 flex items-center">
                 <Sparkles className="h-4 w-4 mr-2 text-primary" />
@@ -522,9 +624,35 @@ function TrendingTopicsTab({
                 Sample Post
               </h4>
               <div className="p-4 bg-muted/30 rounded-lg border border-muted/50">
-                <p className="text-sm whitespace-pre-wrap break-words">
-                  {topic.samplePost}
-                </p>
+                <div className="prose prose-sm dark:prose-invert max-w-none">
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      p: ({ children }) => (
+                        <p className="text-sm whitespace-pre-wrap break-words mb-2">
+                          {children}
+                        </p>
+                      ),
+                      ul: ({ children }) => (
+                        <ul className="list-disc pl-5 mb-2">{children}</ul>
+                      ),
+                      ol: ({ children }) => (
+                        <ol className="list-decimal pl-5 mb-2">{children}</ol>
+                      ),
+                      li: ({ children }) => (
+                        <li className="text-sm">{children}</li>
+                      ),
+                      strong: ({ children }) => (
+                        <strong className="font-semibold">{children}</strong>
+                      ),
+                      em: ({ children }) => (
+                        <em className="italic">{children}</em>
+                      ),
+                    }}
+                  >
+                    {topic.samplePost}
+                  </ReactMarkdown>
+                </div>
               </div>
             </div>
             <Separator />
@@ -568,70 +696,86 @@ function TrendingTopicsTab({
               <>
                 <Separator />
                 <div>
-                  <h4 className="font-semibold text-sm md:text-base mb-3 flex items-center">
-                    <ExternalLink className="h-4 w-4 mr-2 text-primary" />
-                    Sources & Citations
-                  </h4>
-                  <div className="space-y-3">
-                    {topic.sources.map((source, i) => (
-                      <div
-                        key={i}
-                        className="p-3 bg-muted/20 rounded-lg border border-muted/40"
+                  <Collapsible defaultOpen={false}>
+                    <CollapsibleTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="w-full justify-between px-2 h-8"
                       >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="flex-1 min-w-0">
-                            <a
-                              href={source.url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-primary hover:underline font-medium text-sm block truncate"
-                              title={source.title}
-                            >
-                              {source.title}
-                            </a>
-                            <div className="flex items-center gap-2 mt-2 flex-wrap">
-                              {source.platform && (
-                                <Badge variant="secondary" className="text-xs">
-                                  {source.platform}
-                                </Badge>
-                              )}
-                              {source.credibility && (
-                                <Badge
-                                  variant={
-                                    source.credibility
-                                      .toLowerCase()
-                                      .includes("high")
-                                      ? "default"
-                                      : source.credibility
-                                            .toLowerCase()
-                                            .includes("medium")
-                                        ? "secondary"
-                                        : "outline"
-                                  }
-                                  className="text-xs"
-                                >
-                                  {source.credibility} credibility
-                                </Badge>
-                              )}
-                              {source.publishedAt && (
-                                <span className="text-xs text-muted-foreground">
-                                  {new Date(
-                                    source.publishedAt,
-                                  ).toLocaleDateString()}
-                                </span>
-                              )}
+                        <span className="flex items-center">
+                          <ExternalLink className="h-4 w-4 mr-2 text-primary" />
+                          Sources & Citations
+                        </span>
+                        <ChevronDown className="h-4 w-4" />
+                      </Button>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent className="space-y-3 mt-3">
+                      {topic.sources.map((source, i) => (
+                        <div
+                          key={i}
+                          className="p-3 bg-muted/20 rounded-lg border border-muted/40"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex-1 min-w-0">
+                              <a
+                                href={source.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-primary hover:underline font-medium text-sm block truncate"
+                                title={source.title}
+                              >
+                                {source.title}
+                              </a>
+                              <div className="flex items-center gap-2 mt-2 flex-wrap">
+                                {source.platform && (
+                                  <Badge
+                                    variant="secondary"
+                                    className="text-xs"
+                                  >
+                                    {source.platform}
+                                  </Badge>
+                                )}
+                                {source.credibility && (
+                                  <Badge
+                                    variant={
+                                      source.credibility
+                                        .toLowerCase()
+                                        .includes("high")
+                                        ? "default"
+                                        : source.credibility
+                                              .toLowerCase()
+                                              .includes("medium")
+                                          ? "secondary"
+                                          : "outline"
+                                    }
+                                    className="text-xs"
+                                  >
+                                    {source.credibility} credibility
+                                  </Badge>
+                                )}
+                                {source.publishedAt && (
+                                  <span className="text-xs text-muted-foreground">
+                                    {new Date(
+                                      source.publishedAt,
+                                    ).toLocaleDateString()}
+                                  </span>
+                                )}
+                              </div>
                             </div>
+                            <ExternalLink className="h-4 w-4 text-muted-foreground flex-shrink-0 mt-0.5" />
                           </div>
-                          <ExternalLink className="h-4 w-4 text-muted-foreground flex-shrink-0 mt-0.5" />
                         </div>
-                      </div>
-                    ))}
-                  </div>
+                      ))}
+                    </CollapsibleContent>
+                  </Collapsible>
                 </div>
               </>
             )}
           </CardContent>
-          <CardFooter className="p-4 space-y-3">
+          <CardFooter
+            className={`p-4 space-y-3 ${expandedIds.has(topic.id) ? "" : "hidden"}`}
+          >
             {/* Action buttons row */}
             <div className="flex gap-2 w-full">
               <Button
@@ -659,6 +803,15 @@ function TrendingTopicsTab({
               >
                 <Calendar className="h-4 w-4 mr-2" />
                 Schedule
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => handleBrainstormWithRipple(topic)}
+                className="flex-1 h-9"
+              >
+                <MessageSquare className="h-4 w-4 mr-2" />
+                Brainstorm with Ripple
               </Button>
             </div>
 
@@ -950,8 +1103,8 @@ function ViralContentLoadingState({
     const autoRefreshInterval = setInterval(() => {
       setAutoRefreshCount((prev) => {
         const newCount = prev + 1;
-        // Auto-refresh every 5 seconds, up to 24 times (2 minutes total)
-        if (newCount <= 24) {
+        // Auto-refresh every 5 seconds, up to 120 times (10 minutes total)
+        if (newCount <= 120) {
           onCheckProgress();
         }
         return newCount;
@@ -1165,7 +1318,7 @@ function ViralContentLoadingState({
               </p>
               {autoRefreshCount > 0 && (
                 <p className="text-xs text-muted-foreground">
-                  Auto-checking every 5s... ({autoRefreshCount}/24)
+                  Auto-checking every 5s... ({autoRefreshCount}/120)
                 </p>
               )}
             </div>
@@ -1203,6 +1356,8 @@ function ViralPotentialTab({
     "viral-content" | "trend-analysis" | "viral-ideas"
   >("viral-content");
   const [isAnalyzingTrends, setIsAnalyzingTrends] = useState(false);
+  const [isAnalyzingGoogle, setIsAnalyzingGoogle] = useState(false);
+  const [preferManualTrends, setPreferManualTrends] = useState(false);
   const [isAnalyzingBrand, setIsAnalyzingBrand] = useState(false);
   // Remove unused trendAnalysis state
   const [brandInsights, setBrandInsights] = useState<any>(null);
@@ -1213,6 +1368,7 @@ function ViralPotentialTab({
   const [realTimeTrends, setRealTimeTrends] = useState<any[]>([]);
   const [tiktokInstagramTrends, setTiktokInstagramTrends] = useState<any[]>([]);
   const [selectedTrends, setSelectedTrends] = useState<Set<string>>(new Set());
+  const [expandedTrends, setExpandedTrends] = useState<Set<string>>(new Set());
   const [savedInsights, setSavedInsights] = useState<any[]>([]);
   const [previousInsights, setPreviousInsights] = useState<any[]>([]);
   const [isLoadingPreviousInsights, setIsLoadingPreviousInsights] =
@@ -1383,10 +1539,15 @@ function ViralPotentialTab({
     },
   );
 
+  const analysisLoading =
+    detectTrendsMutation.isLoading || isAnalyzingTrends || isAnalyzingGoogle;
+
   // Use cached viral trends data or fallback to real-time trends state
-  const viralTrendsData = cachedViralTrends?.success
-    ? cachedViralTrends?.data || []
-    : realTimeTrends;
+  const viralTrendsData = preferManualTrends
+    ? realTimeTrends
+    : cachedViralTrends?.success
+      ? cachedViralTrends?.data || []
+      : realTimeTrends;
 
   // Show refresh suggestion if data is stale (but not if there are errors)
   const shouldShowRefreshSuggestion =
@@ -1507,6 +1668,108 @@ function ViralPotentialTab({
       });
     } finally {
       setIsAnalyzingTrends(false);
+    }
+  };
+
+  // Analyze Google/News trends
+  const analyzeGoogleTrends = async () => {
+    setIsAnalyzingGoogle(true);
+    // Make progress obvious: switch to Trends tab and show a starting toast
+    setActiveTab("trend-analysis");
+    setPreferManualTrends(true);
+    setRealTimeTrends([]);
+    toast({
+      title: "🔎 Analyzing Google/News",
+      description:
+        "Scanning recent Google/News sources… this can take ~30–60s.",
+    });
+    try {
+      const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+      const res = await apiClient.analyzeGoogleTrendsForBrand({});
+
+      const rawTrends = (res as any)?.trends ?? [];
+      const mapTrend = (t: any, idx: number, withStrictDates: boolean) => ({
+        id: t.id || t.topic || t.trend || t.keyword || `trend-${idx}`,
+        name: t.topic || t.trend || t.keyword || `Trend ${idx + 1}`,
+        description: t.summary || t.context || t.description || "",
+        viralityScore: t.viralPotentialScore || t.score || undefined,
+        platform: "Google/News",
+        contentIdeas: t.contentIdeas || [],
+        sources: (t.sources || []).filter((s: any) => {
+          if (!withStrictDates) return !!s?.url;
+          const d = s?.publishedAt ? new Date(s.publishedAt) : null;
+          return (
+            d instanceof Date &&
+            !isNaN(d.getTime()) &&
+            Date.now() - d.getTime() <= THIRTY_DAYS_MS
+          );
+        }),
+        metrics: t.metrics || undefined,
+      });
+
+      let mapped = rawTrends
+        .map((t: any, idx: number) => mapTrend(t, idx, true))
+        .filter((t: any) => Array.isArray(t.sources) && t.sources.length > 0);
+
+      if (mapped.length === 0 && rawTrends.length > 0) {
+        const fallback = rawTrends
+          .map((t: any, idx: number) => mapTrend(t, idx, false))
+          .filter((t: any) => Array.isArray(t.sources) && t.sources.length > 0);
+        if (fallback.length > 0) {
+          mapped = fallback;
+          toast({
+            title: "No fresh items found",
+            description: "Showing older or undated items so you can still act.",
+          });
+        }
+      }
+
+      setRealTimeTrends(mapped);
+      setPreferManualTrends(true);
+      setActiveTab("trend-analysis");
+      toast({
+        title: "🔎 Google trends analyzed",
+        description: `Found ${mapped.length} opportunities aligned to your brand.`,
+      });
+    } catch (error) {
+      console.error("Error analyzing Google trends:", error);
+      // Try to load cached or recent results so the UI isn't blank
+      try {
+        const cached = await apiClient.getTrendingTopicsResults();
+        const cachedArray = (cached as any)?.data ?? [];
+        if (Array.isArray(cachedArray) && cachedArray.length > 0) {
+          const mapped = cachedArray.map((t: any, idx: number) => ({
+            id: t.id || t.topic || t.trend || t.keyword || `trend-${idx}`,
+            name: t.topic || t.trend || t.keyword || `Trend ${idx + 1}`,
+            description: t.summary || t.context || t.description || "",
+            viralityScore: t.viralPotentialScore || t.score || undefined,
+            platform: "Google/News",
+            contentIdeas: t.contentIdeas || [],
+            sources: (t.sources || []).filter((s: any) => !!s?.url),
+            metrics: t.metrics || undefined,
+          }));
+          setRealTimeTrends(mapped);
+          setPreferManualTrends(true);
+          setActiveTab("trend-analysis");
+          toast({
+            title: "Showing cached trends",
+            description:
+              "Live scan was slow, so we loaded your most recent saved items.",
+          });
+          return;
+        }
+      } catch (e2) {
+        void e2;
+      }
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown error occurred";
+      toast({
+        title: "❌ Error analyzing Google/News",
+        description: `${errorMessage}. Please try again in a moment.`,
+        variant: "destructive",
+      });
+    } finally {
+      setIsAnalyzingGoogle(false);
     }
   };
 
@@ -1687,6 +1950,7 @@ function ViralPotentialTab({
 
   // Refresh all data
   const refreshAllData = async () => {
+    setPreferManualTrends(false);
     setIsRefreshing(true);
     try {
       // Run refreshes in parallel but handle errors individually
@@ -1774,6 +2038,29 @@ function ViralPotentialTab({
     }
   };
 
+  const handleTrendBrainstorm = (trend: any) => {
+    const message = `Help me turn this trend into content.
+
+Trend: ${trend.name || trend.topic}
+Platform: ${trend.platform || "Mixed"}
+Description: ${trend.description || ""}
+Metrics: ${trend.metrics ? JSON.stringify(trend.metrics) : "n/a"}
+
+Please propose 3-5 content ideas and one ready-to-post caption per idea with platform-specific tweaks (LinkedIn, X, Instagram).`;
+    const context = {
+      type: "trend_insight",
+      source: "trend-analysis",
+      trendId: trend.id || trend.name,
+      trendName: trend.name || trend.topic,
+      platform: trend.platform || "mixed",
+    };
+    window.dispatchEvent(
+      new CustomEvent("open-ripple", {
+        detail: { message, context, forceFullscreen: true },
+      }),
+    );
+  };
+
   // Show engaging loading state only when insights are actively being generated
   if (
     isLoadingInsights ||
@@ -1845,7 +2132,7 @@ function ViralPotentialTab({
                 variant="outline"
                 size="sm"
                 onClick={fetchTikTokInstagramTrends}
-                disabled={isAnalyzingTrends || detectTrendsMutation.isLoading}
+                disabled={isAnalyzingTrends || analysisLoading}
                 className="transition-all duration-200 hover:scale-105 h-10 px-4"
               >
                 {isAnalyzingTrends ? (
@@ -1861,10 +2148,26 @@ function ViralPotentialTab({
               <Button
                 variant="outline"
                 size="sm"
-                onClick={analyzeTrendsForBrand}
-                disabled={isAnalyzingBrand || detectTrendsMutation.isLoading}
+                onClick={analyzeGoogleTrends}
+                disabled={analysisLoading}
                 className="transition-all duration-200 hover:scale-105 h-10 px-4"
               >
+                {isAnalyzingGoogle ? (
+                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Globe className="h-4 w-4 mr-2" />
+                )}
+                <span className="hidden sm:inline">Analyze Google Trends</span>
+                <span className="sm:hidden">Google</span>
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={analyzeTrendsForBrand}
+                disabled={isAnalyzingBrand || analysisLoading}
+                className="transition-all duration-200 hover:scale-105 h-10 px-4"
+              >
+                {" "}
                 {isAnalyzingBrand ? (
                   <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
                 ) : (
@@ -1880,7 +2183,7 @@ function ViralPotentialTab({
                 disabled={isRefreshing || detectTrendsMutation.isLoading}
                 className="transition-all duration-200 hover:scale-105 h-10 px-4"
               >
-                {isRefreshing || detectTrendsMutation.isLoading ? (
+                {isRefreshing || analysisLoading ? (
                   <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
                 ) : (
                   <RefreshCw className="h-4 w-4 mr-2" />
@@ -2137,73 +2440,85 @@ function ViralPotentialTab({
                   <>
                     <Separator />
                     <div>
-                      <h4 className="font-semibold text-sm md:text-base mb-2">
-                        Sources
-                      </h4>
-                      <div className="space-y-2">
-                        {post.sources.map((source, i) => (
-                          <div
-                            key={i}
-                            className="p-3 bg-muted/20 rounded-lg border border-muted/30"
+                      <Collapsible defaultOpen={false}>
+                        <CollapsibleTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="w-full justify-between px-2 h-8"
                           >
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="flex-1">
-                                <a
-                                  href={source.url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="text-primary hover:underline font-medium text-sm"
-                                >
-                                  {source.title}
-                                </a>
+                            <span className="flex items-center">
+                              <Globe className="h-4 w-4 mr-2" />
+                              Sources
+                            </span>
+                            <ChevronDown className="h-4 w-4" />
+                          </Button>
+                        </CollapsibleTrigger>
+                        <CollapsibleContent className="space-y-2 mt-2">
+                          {post.sources.map((source, i) => (
+                            <div
+                              key={i}
+                              className="p-3 bg-muted/20 rounded-lg border border-muted/30"
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="flex-1">
+                                  <a
+                                    href={source.url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-primary hover:underline font-medium text-sm"
+                                  >
+                                    {source.title}
+                                  </a>
 
-                                {source.platform && (
-                                  <div className="flex items-center gap-2 mt-1">
-                                    <Badge
-                                      variant="outline"
-                                      className="text-xs"
-                                    >
-                                      <Globe className="h-3 w-3 mr-1" />
-                                      {source.platform}
-                                    </Badge>
-                                    {source.credibility && (
+                                  {source.platform && (
+                                    <div className="flex items-center gap-2 mt-1">
                                       <Badge
-                                        variant={
-                                          source.credibility === "high"
-                                            ? "default"
-                                            : source.credibility === "medium"
-                                              ? "secondary"
-                                              : "outline"
-                                        }
+                                        variant="outline"
                                         className="text-xs"
                                       >
-                                        {source.credibility === "high" && (
-                                          <CheckCircle className="h-3 w-3 mr-1 text-green-500" />
-                                        )}
-                                        {source.credibility === "medium" && (
-                                          <AlertTriangle className="h-3 w-3 mr-1 text-yellow-500" />
-                                        )}
-                                        {source.credibility === "low" && (
-                                          <AlertTriangle className="h-3 w-3 mr-1 text-red-500" />
-                                        )}
-                                        {source.credibility} credibility
+                                        <Globe className="h-3 w-3 mr-1" />
+                                        {source.platform}
                                       </Badge>
-                                    )}
-                                    {source.publishedDate && (
-                                      <span className="text-xs text-muted-foreground flex items-center gap-1">
-                                        <Clock className="h-3 w-3" />
-                                        {new Date(
-                                          source.publishedDate,
-                                        ).toLocaleDateString()}
-                                      </span>
-                                    )}
-                                  </div>
-                                )}
+                                      {source.credibility && (
+                                        <Badge
+                                          variant={
+                                            source.credibility === "high"
+                                              ? "default"
+                                              : source.credibility === "medium"
+                                                ? "secondary"
+                                                : "outline"
+                                          }
+                                          className="text-xs"
+                                        >
+                                          {source.credibility === "high" && (
+                                            <CheckCircle className="h-3 w-3 mr-1 text-green-500" />
+                                          )}
+                                          {source.credibility === "medium" && (
+                                            <AlertTriangle className="h-3 w-3 mr-1 text-yellow-500" />
+                                          )}
+                                          {source.credibility === "low" && (
+                                            <AlertTriangle className="h-3 w-3 mr-1 text-red-500" />
+                                          )}
+                                          {source.credibility} credibility
+                                        </Badge>
+                                      )}
+                                      {source.publishedDate && (
+                                        <span className="text-xs text-muted-foreground flex items-center gap-1">
+                                          <Clock className="h-3 w-3" />
+                                          {new Date(
+                                            source.publishedDate,
+                                          ).toLocaleDateString()}
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        ))}
-                      </div>
+                          ))}
+                        </CollapsibleContent>
+                      </Collapsible>
                     </div>
                   </>
                 )}
@@ -2401,7 +2716,7 @@ function ViralPotentialTab({
           </Card>
 
           {/* Real-time Trends - Only show if there are trends or currently loading */}
-          {(viralTrendsData.length > 0 || detectTrendsMutation.isLoading) && (
+          {(viralTrendsData.length > 0 || analysisLoading) && (
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center justify-between">
@@ -2410,7 +2725,7 @@ function ViralPotentialTab({
                     Real-time Trending Insights
                   </div>
                   <div className="flex items-center gap-2">
-                    {detectTrendsMutation.isLoading ? (
+                    {detectTrendsMutation.isLoading || isAnalyzingGoogle ? (
                       <Badge
                         variant="outline"
                         className="text-xs animate-pulse"
@@ -2461,10 +2776,10 @@ function ViralPotentialTab({
                         variant="outline"
                         size="sm"
                         onClick={fetchRealTimeTrends}
-                        disabled={detectTrendsMutation.isLoading}
+                        disabled={analysisLoading}
                         className="border-yellow-300 text-yellow-700 hover:bg-yellow-100 dark:border-yellow-700 dark:text-yellow-300 dark:hover:bg-yellow-950"
                       >
-                        {detectTrendsMutation.isLoading ? (
+                        {detectTrendsMutation.isLoading || isAnalyzingGoogle ? (
                           <RefreshCw className="h-3 w-3 mr-1 animate-spin" />
                         ) : (
                           <RefreshCw className="h-3 w-3 mr-1" />
@@ -2476,7 +2791,7 @@ function ViralPotentialTab({
                 )}
 
                 {/* Show loading state when trends are being fetched */}
-                {detectTrendsMutation.isLoading && !viralTrendsData.length && (
+                {analysisLoading && !viralTrendsData.length && (
                   <div className="flex items-center justify-center py-12">
                     <div className="text-center space-y-3">
                       <RefreshCw className="h-8 w-8 animate-spin mx-auto text-primary" />
@@ -2503,13 +2818,14 @@ function ViralPotentialTab({
                           : "hover:border-primary/50"
                       }`}
                       onClick={() => {
-                        const newSelected = new Set(selectedTrends);
-                        if (selectedTrends.has(trend.id || trend.name)) {
-                          newSelected.delete(trend.id || trend.name);
+                        const id = trend.id || trend.name;
+                        const newExpanded = new Set(expandedTrends);
+                        if (newExpanded.has(id)) {
+                          newExpanded.delete(id);
                         } else {
-                          newSelected.add(trend.id || trend.name);
+                          newExpanded.add(id);
                         }
-                        setSelectedTrends(newSelected);
+                        setExpandedTrends(newExpanded);
                       }}
                     >
                       <div className="flex items-start justify-between mb-3">
@@ -2559,6 +2875,82 @@ function ViralPotentialTab({
                           <span className="text-xs font-medium">
                             {trend.viralityScore}/10
                           </span>
+                        </div>
+                      )}
+
+                      {expandedTrends.has(trend.id || trend.name) && (
+                        <div className="mt-3 pt-3 border-t space-y-3">
+                          <p className="text-xs text-muted-foreground">
+                            {trend.description}
+                          </p>
+                          {Array.isArray(trend.contentIdeas) &&
+                            trend.contentIdeas.length > 0 && (
+                              <div>
+                                <h5 className="text-xs font-medium mb-1">
+                                  Content ideas
+                                </h5>
+                                <ul className="list-disc pl-4 space-y-1">
+                                  {trend.contentIdeas
+                                    .slice(0, 3)
+                                    .map((idea: string, i: number) => (
+                                      <li
+                                        key={i}
+                                        className="text-xs text-muted-foreground"
+                                      >
+                                        {idea}
+                                      </li>
+                                    ))}
+                                </ul>
+                              </div>
+                            )}
+                          {Array.isArray(trend.sources) &&
+                            trend.sources.length > 0 && (
+                              <div>
+                                <h5 className="text-xs font-medium mb-1">
+                                  Sources
+                                </h5>
+                                <div className="space-y-2">
+                                  {trend.sources
+                                    .slice(0, 3)
+                                    .map((s: any, i: number) => (
+                                      <div
+                                        key={i}
+                                        className="flex items-center justify-between gap-2"
+                                      >
+                                        <a
+                                          href={s.url}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-xs text-primary hover:underline truncate flex-1"
+                                        >
+                                          {s.title || s.url}
+                                        </a>
+                                        {(s.publishedAt || s.publishedDate) && (
+                                          <span className="text-[10px] text-muted-foreground whitespace-nowrap">
+                                            {new Date(
+                                              s.publishedAt || s.publishedDate,
+                                            ).toLocaleDateString()}
+                                          </span>
+                                        )}
+                                      </div>
+                                    ))}
+                                </div>
+                              </div>
+                            )}
+                          <div className="flex gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-8"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleTrendBrainstorm(trend);
+                              }}
+                            >
+                              <Sparkles className="h-3 w-3 mr-1" /> Generate
+                              ideas
+                            </Button>
+                          </div>
                         </div>
                       )}
                     </motion.div>
@@ -2821,13 +3213,14 @@ function ViralPotentialTab({
                           : "hover:border-primary/50"
                       }`}
                       onClick={() => {
-                        const newSelected = new Set(selectedTrends);
-                        if (selectedTrends.has(trend.id || trend.name)) {
-                          newSelected.delete(trend.id || trend.name);
+                        const id = trend.id || trend.name;
+                        const newExpanded = new Set(expandedTrends);
+                        if (newExpanded.has(id)) {
+                          newExpanded.delete(id);
                         } else {
-                          newSelected.add(trend.id || trend.name);
+                          newExpanded.add(id);
                         }
-                        setSelectedTrends(newSelected);
+                        setExpandedTrends(newExpanded);
                       }}
                     >
                       <div className="flex items-start justify-between mb-3">
@@ -2878,6 +3271,82 @@ function ViralPotentialTab({
                           <span className="text-xs font-medium">
                             {trend.viralityScore}/10
                           </span>
+                        </div>
+                      )}
+
+                      {expandedTrends.has(trend.id || trend.name) && (
+                        <div className="mt-3 pt-3 border-t space-y-3">
+                          <p className="text-xs text-muted-foreground">
+                            {trend.description}
+                          </p>
+                          {Array.isArray(trend.contentIdeas) &&
+                            trend.contentIdeas.length > 0 && (
+                              <div>
+                                <h5 className="text-xs font-medium mb-1">
+                                  Content ideas
+                                </h5>
+                                <ul className="list-disc pl-4 space-y-1">
+                                  {trend.contentIdeas
+                                    .slice(0, 3)
+                                    .map((idea: string, i: number) => (
+                                      <li
+                                        key={i}
+                                        className="text-xs text-muted-foreground"
+                                      >
+                                        {idea}
+                                      </li>
+                                    ))}
+                                </ul>
+                              </div>
+                            )}
+                          {Array.isArray(trend.sources) &&
+                            trend.sources.length > 0 && (
+                              <div>
+                                <h5 className="text-xs font-medium mb-1">
+                                  Sources
+                                </h5>
+                                <div className="space-y-2">
+                                  {trend.sources
+                                    .slice(0, 3)
+                                    .map((s: any, i: number) => (
+                                      <div
+                                        key={i}
+                                        className="flex items-center justify-between gap-2"
+                                      >
+                                        <a
+                                          href={s.url}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-xs text-primary hover:underline truncate flex-1"
+                                        >
+                                          {s.title || s.url}
+                                        </a>
+                                        {(s.publishedAt || s.publishedDate) && (
+                                          <span className="text-[10px] text-muted-foreground whitespace-nowrap">
+                                            {new Date(
+                                              s.publishedAt || s.publishedDate,
+                                            ).toLocaleDateString()}
+                                          </span>
+                                        )}
+                                      </div>
+                                    ))}
+                                </div>
+                              </div>
+                            )}
+                          <div className="flex gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-8"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleTrendBrainstorm(trend);
+                              }}
+                            >
+                              <Sparkles className="h-3 w-3 mr-1" /> Generate
+                              ideas
+                            </Button>
+                          </div>
                         </div>
                       )}
                     </motion.div>
@@ -3831,6 +4300,94 @@ function BrandSetupProgress({ className }: { className?: string }) {
 }
 
 // Enhanced error logging utility
+// Install global error filtering to avoid logging noisy browser extension errors (e.g., MetaMask)
+if (typeof window !== "undefined" && !(window as any).__errorFilterInstalled) {
+  (window as any).__errorFilterInstalled = true;
+  const IGNORABLE_PATTERNS = [
+    "MetaMask extension not found",
+    "Failed to connect to MetaMask",
+  ];
+  const isIgnorable = (input: any): boolean => {
+    try {
+      const msg = typeof input === "string" ? input : input?.message || "";
+      const filename = (input as any)?.filename || "";
+      const stack = (input as any)?.error?.stack || (input as any)?.stack || "";
+      if (
+        typeof filename === "string" &&
+        filename.startsWith("chrome-extension://")
+      )
+        return true;
+      if (typeof stack === "string" && stack.includes("chrome-extension://"))
+        return true;
+      if (msg && IGNORABLE_PATTERNS.some((p) => msg.includes(p))) return true;
+      return false;
+    } catch {
+      return false;
+    }
+  };
+
+  const prevOnError = window.onerror;
+  window.onerror = function (message, source, lineno, colno, error) {
+    const combined: any = {
+      message: String(message || ""),
+      filename: String(source || ""),
+      error,
+    };
+    if (isIgnorable(combined)) {
+      return true; // prevent default logging
+    }
+    if (typeof prevOnError === "function") {
+      try {
+        return (prevOnError as any).call(
+          window,
+          message,
+          source,
+          lineno,
+          colno,
+          error as any,
+        );
+      } catch {}
+    }
+    return false;
+  } as any;
+
+  window.addEventListener(
+    "error",
+    (e: ErrorEvent) => {
+      if (isIgnorable(e)) {
+        e.preventDefault();
+      }
+    },
+    true,
+  );
+
+  window.addEventListener("unhandledrejection", (e: PromiseRejectionEvent) => {
+    if (isIgnorable(e.reason)) {
+      e.preventDefault();
+    }
+  });
+
+  const originalConsoleError = console.error;
+  console.error = (...args: any[]) => {
+    try {
+      const text = args
+        .map((a) => (typeof a === "string" ? a : a?.message || ""))
+        .join(" ");
+      const stacks = args
+        .map((a) => a?.stack || a?.error?.stack || "")
+        .join("\n");
+      if (
+        text.includes("chrome-extension://") ||
+        stacks.includes("chrome-extension://") ||
+        IGNORABLE_PATTERNS.some((p) => text.includes(p))
+      ) {
+        return; // swallow noisy extension errors
+      }
+    } catch {}
+    originalConsoleError(...args);
+  };
+}
+
 const logError = (
   error: Error | any,
   context: string,
@@ -4069,6 +4626,14 @@ import {
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
+  Drawer,
+  DrawerTrigger,
+  DrawerContent,
+  DrawerHeader,
+  DrawerTitle,
+  DrawerDescription,
+  DrawerFooter,
+  DrawerClose,
   Accordion,
   AccordionContent,
   AccordionItem,
@@ -4118,6 +4683,20 @@ import {
   Popover,
   PopoverTrigger,
   PopoverContent,
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "~/components/ui";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
 } from "~/components/ui";
 import {
   Facebook,
@@ -4207,6 +4786,9 @@ import {
   UserCheck,
   Building2,
   Palette,
+  MoreHorizontal,
+  Maximize2,
+  Minimize2,
 } from "lucide-react";
 // Removed duplicate React import
 import { AnimatePresence, motion } from "framer-motion";
@@ -4459,6 +5041,7 @@ function OnboardingGuide({
   const [isTablet, setIsTablet] = useState(
     window.innerWidth >= 768 && window.innerWidth < 1024,
   );
+  const [isHeaderMinimized, setIsHeaderMinimized] = useState(true);
   const [reducedMotion, setReducedMotion] = useState(false);
 
   // Enhanced responsive design hook with performance optimization
@@ -4548,6 +5131,11 @@ function OnboardingGuide({
           e.preventDefault();
           setShowKeyboardHints(!showKeyboardHints);
           break;
+        case "KeyF":
+        case "f": // Toggle focus mode (minimize header)
+          e.preventDefault();
+          setIsHeaderMinimized((v) => !v);
+          break;
         default:
           // Handle number keys for direct navigation
           const num = parseInt(e.key);
@@ -4586,6 +5174,44 @@ function OnboardingGuide({
   );
 
   const queryClient = useQueryClient();
+
+  // Inline Brand Setup state (prefilled from guidelines)
+  const [bv, setBv] = useState<string>("");
+  const [website, setWebsite] = useState<string>("");
+  const [socials, setSocials] = useState<string>("");
+  const [tones, setTones] = useState<string>("");
+  const [usePhrases, setUsePhrases] = useState<string>("");
+  const [avoidPhrases, setAvoidPhrases] = useState<string>("");
+
+  useEffect(() => {
+    if (!isOpen) return;
+    if (brandGuidelines) {
+      setBv(brandGuidelines.brandVoice ?? "");
+      setWebsite(brandGuidelines.brandWebsite ?? "");
+      const sl = brandGuidelines.socialLinks || {};
+      const slList = Object.values(sl as Record<string, string>);
+      setSocials(slList.join(", "));
+      setTones((brandGuidelines.tonePriorities || []).join(", "));
+      setUsePhrases((brandGuidelines.phrasesToUse || []).join(", "));
+      setAvoidPhrases((brandGuidelines.phrasesToAvoid || []).join(", "));
+    }
+  }, [brandGuidelines, isOpen]);
+
+  const saveBrandMutation = useMutation(apiClient.saveBrandGuidelines, {
+    onSuccess: () => {
+      toast({ title: "Brand voice saved" });
+      setCompletedSteps((prev) => new Set([...prev, "brand-setup"]));
+      queryClient.invalidateQueries({ queryKey: ["brandGuidelines"] });
+      setTimeout(() => setCurrentStepIndex((i) => i + 1), 250);
+    },
+    onError: (err: unknown) => {
+      toast({
+        title: "Could not save",
+        description: err instanceof Error ? err.message : undefined,
+        variant: "destructive",
+      });
+    },
+  });
 
   const markTourCompletedMutation = useMutation(apiClient.markTourAsCompleted, {
     onSuccess: () => {
@@ -4734,85 +5360,153 @@ function OnboardingGuide({
               Connect Your Social Accounts
             </h3>
             <p className="text-muted-foreground">
-              Link Facebook, Instagram, Twitter, LinkedIn, and YouTube to unlock
-              AI-powered engagement management and analytics.
+              Use the quick buttons below — no redirects to settings. Connect at
+              least one now or skip and do it later.
             </p>
           </div>
 
-          <div className="space-y-3">
-            <div className="flex items-center gap-3 p-3 bg-secondary/50 rounded-lg">
-              <div className="w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center">
-                <span className="text-white text-sm font-bold">f</span>
-              </div>
-              <div className="flex-1">
-                <div className="font-medium">Facebook & Instagram</div>
-                <div className="text-sm text-muted-foreground">
-                  Manage posts and comments
+          {/* Inline connect buttons with live status */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="p-3 border rounded-lg flex items-center justify-between gap-3">
+              <div>
+                <div className="font-medium">Facebook</div>
+                <div className="text-xs text-muted-foreground">
+                  Pages & comments
                 </div>
               </div>
-              <div
-                className={`w-3 h-3 rounded-full ${hasConnectedAccounts ? "bg-green-500" : "bg-gray-300"}`}
-              />
+              <div className="flex items-center gap-2">
+                {Array.isArray(connectedAccounts) &&
+                connectedAccounts.some((a: any) =>
+                  String(a.platform || "")
+                    .toLowerCase()
+                    .includes("facebook"),
+                ) ? (
+                  <Badge variant="secondary" className="hidden sm:inline">
+                    Connected
+                  </Badge>
+                ) : null}
+                <FacebookOAuthButton />
+              </div>
             </div>
 
-            <div className="flex items-center gap-3 p-3 bg-secondary/50 rounded-lg">
-              <div className="w-8 h-8 bg-blue-400 rounded-full flex items-center justify-center">
-                <span className="text-white text-sm font-bold">𝕏</span>
+            <div className="p-3 border rounded-lg flex items-center justify-between gap-3">
+              <div>
+                <div className="font-medium">Instagram</div>
+                <div className="text-xs text-muted-foreground">
+                  DMs & comments
+                </div>
               </div>
-              <div className="flex-1">
+              <div className="flex items-center gap-2">
+                {Array.isArray(connectedAccounts) &&
+                connectedAccounts.some((a: any) =>
+                  String(a.platform || "")
+                    .toLowerCase()
+                    .includes("instagram"),
+                ) ? (
+                  <Badge variant="secondary" className="hidden sm:inline">
+                    Connected
+                  </Badge>
+                ) : null}
+                <InstagramOAuthButton />
+              </div>
+            </div>
+
+            <div className="p-3 border rounded-lg flex items-center justify-between gap-3">
+              <div>
                 <div className="font-medium">Twitter / X</div>
-                <div className="text-sm text-muted-foreground">
-                  Track mentions and trends
+                <div className="text-xs text-muted-foreground">
+                  Mentions & trends
                 </div>
               </div>
-              <div
-                className={`w-3 h-3 rounded-full ${hasConnectedAccounts ? "bg-green-500" : "bg-gray-300"}`}
-              />
+              <div className="flex items-center gap-2">
+                {Array.isArray(connectedAccounts) &&
+                connectedAccounts.some(
+                  (a: any) =>
+                    String(a.platform || "")
+                      .toLowerCase()
+                      .includes("twitter") ||
+                    String(a.platform || "")
+                      .toLowerCase()
+                      .includes("x"),
+                ) ? (
+                  <Badge variant="secondary" className="hidden sm:inline">
+                    Connected
+                  </Badge>
+                ) : null}
+                <TwitterOAuthButton />
+              </div>
             </div>
 
-            <div className="flex items-center gap-3 p-3 bg-secondary/50 rounded-lg">
-              <div className="w-8 h-8 bg-red-500 rounded-full flex items-center justify-center">
-                <span className="text-white text-sm font-bold">▶</span>
-              </div>
-              <div className="flex-1">
-                <div className="font-medium">YouTube</div>
-                <div className="text-sm text-muted-foreground">
-                  Manage video comments
+            <div className="p-3 border rounded-lg flex items-center justify-between gap-3">
+              <div>
+                <div className="font-medium">LinkedIn</div>
+                <div className="text-xs text-muted-foreground">
+                  Company updates
                 </div>
               </div>
-              <div
-                className={`w-3 h-3 rounded-full ${hasConnectedAccounts ? "bg-green-500" : "bg-gray-300"}`}
-              />
+              <div className="flex items-center gap-2">
+                {Array.isArray(connectedAccounts) &&
+                connectedAccounts.some((a: any) =>
+                  String(a.platform || "")
+                    .toLowerCase()
+                    .includes("linkedin"),
+                ) ? (
+                  <Badge variant="secondary" className="hidden sm:inline">
+                    Connected
+                  </Badge>
+                ) : null}
+                <LinkedInOAuthButton />
+              </div>
+            </div>
+
+            <div className="p-3 border rounded-lg flex items-center justify-between gap-3 sm:col-span-2">
+              <div>
+                <div className="font-medium">YouTube</div>
+                <div className="text-xs text-muted-foreground">
+                  Video comments
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {Array.isArray(connectedAccounts) &&
+                connectedAccounts.some((a: any) =>
+                  String(a.platform || "")
+                    .toLowerCase()
+                    .includes("youtube"),
+                ) ? (
+                  <Badge variant="secondary" className="hidden sm:inline">
+                    Connected
+                  </Badge>
+                ) : null}
+                <YouTubeOAuthButton />
+              </div>
             </div>
           </div>
 
           {hasConnectedAccounts ? (
             <Alert>
               <CheckCircle className="h-4 w-4" />
-              <AlertTitle>Great job!</AlertTitle>
+              <AlertTitle>Nice! You're connected.</AlertTitle>
               <AlertDescription>
-                You've connected {connectedAccounts?.length} account(s). You can
-                always add more in Settings.
+                You’ve connected {connectedAccounts?.length} account(s). You can
+                add more any time.
               </AlertDescription>
             </Alert>
           ) : (
             <Alert>
               <HelpCircle className="h-4 w-4" />
-              <AlertTitle>Ready to connect?</AlertTitle>
+              <AlertTitle>Tip</AlertTitle>
               <AlertDescription>
-                You can connect accounts now or skip this step and do it later
-                in Settings.
+                Start with any one platform — you can always connect the rest
+                later.
               </AlertDescription>
             </Alert>
           )}
         </div>
       ),
-      action: {
-        label: hasConnectedAccounts ? "Accounts Connected" : "Connect Accounts",
-        navigate: "/settings",
-        variant: hasConnectedAccounts ? "outline" : "default",
-        icon: hasConnectedAccounts ? CheckCircle : Settings,
-      },
+      action: hasConnectedAccounts
+        ? { label: "Accounts Connected", variant: "outline", icon: CheckCircle }
+        : undefined,
+      optional: true,
       completed: hasConnectedAccounts,
     },
     {
@@ -4831,80 +5525,123 @@ function OnboardingGuide({
               Define Your Brand Voice & Context
             </h3>
             <p className="text-muted-foreground">
-              Help our AI understand your brand's personality and context by
-              adding your brand voice and website/social links. This powers
-              personalized content in Discover and Create sections.
+              A quick, inline setup that powers personalized content everywhere.
+              You can refine this anytime.
             </p>
           </div>
 
-          <div className="bg-gradient-to-r from-blue-50 to-purple-50 dark:from-blue-950/20 dark:to-purple-950/20 rounded-lg p-4 mb-4">
-            <div className="flex items-center gap-2 mb-2">
-              <Sparkles className="h-5 w-5 text-primary" />
-              <span className="font-semibold text-primary">
-                AI-Powered Brand Analysis
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              const toList = (s: string) =>
+                s
+                  .split(/\n|,/)
+                  .map((x) => x.trim())
+                  .filter((x) => x.length > 0);
+              const socialsObj = toList(socials).reduce(
+                (acc, url, idx) => ({ ...acc, ["link" + (idx + 1)]: url }),
+                {} as Record<string, string>,
+              );
+              saveBrandMutation.mutate({
+                brandVoice: bv,
+                tonePriorities: toList(tones),
+                phrasesToUse: toList(usePhrases),
+                phrasesToAvoid: toList(avoidPhrases),
+                exampleResponses: [],
+                brandWebsite: website || undefined,
+                socialLinks: Object.keys(socialsObj).length
+                  ? socialsObj
+                  : undefined,
+              });
+            }}
+            className="grid grid-cols-1 md:grid-cols-2 gap-4"
+          >
+            <div className="p-4 bg-secondary/30 rounded-lg space-y-2">
+              <h4 className="font-semibold mb-1 flex items-center gap-2">
+                <MessageCircle className="h-4 w-4" /> Brand Voice
+              </h4>
+              <Textarea
+                value={bv}
+                onChange={(e) => setBv(e.target.value)}
+                placeholder="e.g., Warm, witty, and practical — like a helpful expert friend"
+                className="min-h-[88px]"
+              />
+              <p className="text-xs text-muted-foreground">
+                Keep it short and descriptive.
+              </p>
+            </div>
+
+            <div className="p-4 bg-secondary/30 rounded-lg space-y-2">
+              <h4 className="font-semibold mb-1 flex items-center gap-2">
+                <ExternalLink className="h-4 w-4" /> Website & Social Links
+              </h4>
+              <Input
+                value={website}
+                onChange={(e) => setWebsite(e.target.value)}
+                placeholder="Main website URL"
+              />
+              <Textarea
+                value={socials}
+                onChange={(e) => setSocials(e.target.value)}
+                placeholder="Social profile URLs, comma or newline separated"
+                className="min-h-[72px]"
+              />
+              <p className="text-xs text-muted-foreground">
+                Adding links lets the AI analyze real examples.
+              </p>
+            </div>
+
+            <div className="p-4 bg-secondary/30 rounded-lg space-y-2">
+              <h4 className="font-semibold mb-1 flex items-center gap-2">
+                <Target className="h-4 w-4" /> Tone Priorities
+              </h4>
+              <Input
+                value={tones}
+                onChange={(e) => setTones(e.target.value)}
+                placeholder="e.g., Friendly, Professional, Playful"
+              />
+              <p className="text-xs text-muted-foreground">
+                Comma or newline separated.
+              </p>
+            </div>
+
+            <div className="p-4 bg-secondary/30 rounded-lg space-y-2">
+              <h4 className="font-semibold mb-1 flex items-center gap-2">
+                <ThumbsUp className="h-4 w-4" /> Phrases to Use / Avoid
+              </h4>
+              <Input
+                value={usePhrases}
+                onChange={(e) => setUsePhrases(e.target.value)}
+                placeholder="Use: e.g., "
+              />
+              <Input
+                value={avoidPhrases}
+                onChange={(e) => setAvoidPhrases(e.target.value)}
+                placeholder="Avoid: e.g., "
+              />
+              <p className="text-xs text-muted-foreground">
+                Comma or newline separated.
+              </p>
+            </div>
+
+            <div className="md:col-span-2 flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
+              <Button
+                type="submit"
+                disabled={saveBrandMutation.isLoading || !bv}
+                className="flex-1 sm:flex-none"
+              >
+                {saveBrandMutation.isLoading ? (
+                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Sparkles className="h-4 w-4 mr-2" />
+                )}
+                Save & Continue
+              </Button>
+              <span className="text-xs text-muted-foreground">
+                You can refine this later in Settings.
               </span>
             </div>
-            <p className="text-sm text-muted-foreground mb-3">
-              When you add your website and social media links, our AI
-              automatically:
-            </p>
-            <ul className="text-sm space-y-1 text-muted-foreground">
-              <li className="flex items-center gap-2">
-                <div className="w-1.5 h-1.5 bg-green-500 rounded-full" />
-                Analyzes your brand's communication style and values
-              </li>
-              <li className="flex items-center gap-2">
-                <div className="w-1.5 h-1.5 bg-blue-500 rounded-full" />
-                Identifies trending topics relevant to your industry
-              </li>
-              <li className="flex items-center gap-2">
-                <div className="w-1.5 h-1.5 bg-purple-500 rounded-full" />
-                Generates personalized content recommendations
-              </li>
-            </ul>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="p-4 bg-secondary/30 rounded-lg">
-              <h4 className="font-semibold mb-2 flex items-center gap-2">
-                <MessageCircle className="h-4 w-4" />
-                Brand Voice
-              </h4>
-              <p className="text-sm text-muted-foreground">
-                Professional, friendly, casual, authoritative, playful, etc.
-              </p>
-            </div>
-
-            <div className="p-4 bg-secondary/30 rounded-lg">
-              <h4 className="font-semibold mb-2 flex items-center gap-2">
-                <ExternalLink className="h-4 w-4" />
-                Website & Social Links
-              </h4>
-              <p className="text-sm text-muted-foreground">
-                Your website and social media profiles for AI analysis
-              </p>
-            </div>
-
-            <div className="p-4 bg-secondary/30 rounded-lg">
-              <h4 className="font-semibold mb-2 flex items-center gap-2">
-                <Target className="h-4 w-4" />
-                Tone Priorities
-              </h4>
-              <p className="text-sm text-muted-foreground">
-                What tone should your content prioritize?
-              </p>
-            </div>
-
-            <div className="p-4 bg-secondary/30 rounded-lg">
-              <h4 className="font-semibold mb-2 flex items-center gap-2">
-                <ThumbsUp className="h-4 w-4" />
-                Brand Guidelines
-              </h4>
-              <p className="text-sm text-muted-foreground">
-                Phrases to use and avoid for consistent messaging
-              </p>
-            </div>
-          </div>
+          </form>
 
           {hasBrandGuidelines ? (
             <Alert>
@@ -4912,32 +5649,14 @@ function OnboardingGuide({
               <AlertTitle>Brand voice configured!</AlertTitle>
               <AlertDescription>
                 Your brand guidelines are set up. The AI will use these to match
-                your communication style and analyze your brand context for
-                personalized recommendations.
+                your style and analyze your brand context.
               </AlertDescription>
             </Alert>
-          ) : (
-            <Alert className="border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/20">
-              <HelpCircle className="h-4 w-4 text-amber-600" />
-              <AlertTitle className="text-amber-800 dark:text-amber-200">
-                Highly Recommended
-              </AlertTitle>
-              <AlertDescription className="text-amber-700 dark:text-amber-300">
-                Setting up your brand voice and adding your website/social links
-                enables personalized content discovery and creation. This step
-                significantly improves the quality of AI recommendations.
-              </AlertDescription>
-            </Alert>
-          )}
+          ) : null}
         </div>
       ),
-      action: {
-        label: hasBrandGuidelines ? "Brand Voice Set" : "Set Up Brand Voice",
-        navigate: "/settings",
-        variant: hasBrandGuidelines ? "outline" : "default",
-        icon: hasBrandGuidelines ? CheckCircle : MessageCircle,
-      },
-      optional: false,
+      action: undefined,
+      optional: true,
       completed: !!hasBrandGuidelines,
     },
     {
@@ -5615,78 +6334,42 @@ function OnboardingGuide({
           }`}
         >
           {/* Header */}
-          <div
-            className={`relative border-b bg-gradient-to-r from-primary/5 via-primary/3 to-transparent ${
-              isMobile ? "p-4" : isTablet ? "p-6" : "p-8"
-            }`}
-          >
+          {isHeaderMinimized ? (
             <div
-              className={`flex items-start justify-between ${
-                isMobile ? "mb-4 flex-col gap-3" : "mb-6 flex-row"
-              }`}
+              className={`relative border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 ${
+                isMobile ? "p-3" : isTablet ? "p-4" : "p-5"
+              } flex items-center justify-between`}
             >
-              <motion.div
-                className={`flex items-start flex-1 min-w-0 ${
-                  isMobile ? "gap-3 w-full" : "gap-4"
-                }`}
-                initial={reducedMotion ? {} : { opacity: 0, x: -20 }}
-                animate={reducedMotion ? {} : { opacity: 1, x: 0 }}
-                transition={reducedMotion ? {} : { delay: 0.2 }}
-              >
-                <motion.div
-                  className={`bg-primary/10 rounded-xl border border-primary/20 flex-shrink-0 ${
-                    isMobile ? "p-2" : "p-3"
-                  }`}
-                  whileHover={reducedMotion ? {} : { scale: 1.05, rotate: 5 }}
-                  whileTap={reducedMotion ? {} : { scale: 0.95 }}
-                >
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-8 h-8 rounded-md bg-primary/10 border border-primary/20 flex items-center justify-center">
                   {currentStep.icon}
-                </motion.div>
-                <div className="space-y-1 min-w-0">
-                  <motion.h2
-                    className={`font-bold tracking-tight ${
-                      isMobile ? "text-lg" : isTablet ? "text-xl" : "text-2xl"
-                    }`}
-                    initial={reducedMotion ? {} : { opacity: 0, y: 10 }}
-                    animate={reducedMotion ? {} : { opacity: 1, y: 0 }}
-                    transition={reducedMotion ? {} : { delay: 0.3 }}
-                  >
-                    {currentStep.title}
-                  </motion.h2>
-                  <motion.p
-                    className={`text-muted-foreground leading-relaxed ${
-                      isMobile ? "text-sm" : isTablet ? "text-base" : "text-lg"
-                    }`}
-                    initial={reducedMotion ? {} : { opacity: 0, y: 10 }}
-                    animate={reducedMotion ? {} : { opacity: 1, y: 0 }}
-                    transition={reducedMotion ? {} : { delay: 0.4 }}
-                  >
-                    {currentStep.description}
-                  </motion.p>
-                  {currentStep.optional && (
-                    <motion.div
-                      initial={reducedMotion ? {} : { opacity: 0, scale: 0.8 }}
-                      animate={reducedMotion ? {} : { opacity: 1, scale: 1 }}
-                      transition={reducedMotion ? {} : { delay: 0.5 }}
-                    >
-                      <Badge variant="secondary" className="mt-2">
-                        Optional
-                      </Badge>
-                    </motion.div>
-                  )}
                 </div>
-              </motion.div>
-              <motion.div
-                className={`flex items-center gap-2 flex-shrink-0 ${
-                  isMobile ? "self-end" : ""
-                }`}
-                initial={reducedMotion ? {} : { opacity: 0, scale: 0.8 }}
-                animate={reducedMotion ? {} : { opacity: 1, scale: 1 }}
-                transition={reducedMotion ? {} : { delay: 0.3 }}
-              >
+                <div className="min-w-0">
+                  <div className="font-semibold truncate">
+                    {currentStepIndex + 1} / {steps.length} •{" "}
+                    {currentStep.title}
+                  </div>
+                  <div className="w-40 sm:w-56 h-1.5 bg-secondary/60 rounded-full overflow-hidden">
+                    <motion.div
+                      className="h-full bg-primary"
+                      initial={{ width: 0 }}
+                      animate={{ width: `${progress}%` }}
+                      transition={{ duration: 0.4 }}
+                    />
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-1">
                 <Button
                   variant="ghost"
-                  size={isMobile ? "sm" : "sm"}
+                  size="sm"
+                  onClick={() => setIsHeaderMinimized(false)}
+                >
+                  <Maximize2 className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
                   onClick={() => {
                     if (currentStepIndex === steps.length - 1) {
                       markTourCompletedMutation.mutate();
@@ -5694,240 +6377,403 @@ function OnboardingGuide({
                       onClose();
                     }
                   }}
-                  className={`text-muted-foreground hover:text-foreground p-0 ${
-                    isMobile ? "h-7 w-7" : "h-8 w-8"
-                  }`}
+                  className="text-muted-foreground hover:text-foreground"
                 >
-                  <X className={isMobile ? "h-3 w-3" : "h-4 w-4"} />
+                  <X className="h-4 w-4" />
                 </Button>
-              </motion.div>
+              </div>
             </div>
-
-            {/* Enhanced Progress Bar */}
-            <motion.div
-              className={isMobile ? "space-y-3" : "space-y-4"}
-              initial={reducedMotion ? {} : { opacity: 0, y: 10 }}
-              animate={reducedMotion ? {} : { opacity: 1, y: 0 }}
-              transition={reducedMotion ? {} : { delay: 0.5 }}
+          ) : (
+            <div
+              className={`relative border-b bg-gradient-to-r from-primary/5 via-primary/3 to-transparent ${
+                isMobile ? "p-4" : isTablet ? "p-6" : "p-8"
+              }`}
             >
               <div
-                className={`flex items-center text-sm ${
-                  isMobile ? "flex-col gap-2" : "justify-between"
+                className={`flex items-start justify-between ${
+                  isMobile ? "mb-4 flex-col gap-3" : "mb-6 flex-row"
                 }`}
               >
-                <div className="flex items-center gap-2">
-                  <motion.span
-                    className="font-medium"
-                    key={currentStepIndex}
-                    initial={reducedMotion ? {} : { scale: 0.8 }}
-                    animate={reducedMotion ? {} : { scale: 1 }}
-                    transition={
-                      reducedMotion ? {} : { type: "spring", stiffness: 300 }
-                    }
-                  >
-                    Step {currentStepIndex + 1} of {steps.length}
-                  </motion.span>
-                  {completedSteps.has(currentStep.id) && (
-                    <motion.div
-                      initial={
-                        reducedMotion
-                          ? {}
-                          : { opacity: 0, scale: 0.5, rotate: -180 }
-                      }
-                      animate={
-                        reducedMotion ? {} : { opacity: 1, scale: 1, rotate: 0 }
-                      }
-                      transition={
-                        reducedMotion ? {} : { type: "spring", stiffness: 200 }
-                      }
-                    >
-                      <Badge variant="secondary" className="text-xs">
-                        <CheckCircle className="h-3 w-3 mr-1" />
-                        Completed
-                      </Badge>
-                    </motion.div>
-                  )}
-                </div>
-                <motion.span
-                  className="text-muted-foreground font-medium"
-                  key={Math.round(progress)}
-                  initial={reducedMotion ? {} : { opacity: 0.5 }}
-                  animate={reducedMotion ? {} : { opacity: 1 }}
-                >
-                  {Math.round(progress)}% complete
-                </motion.span>
-              </div>
-              <div className="relative">
-                <div
-                  className={`w-full bg-secondary/50 rounded-full overflow-hidden ${
-                    isMobile ? "h-2" : "h-3"
+                <motion.div
+                  className={`flex items-start flex-1 min-w-0 ${
+                    isMobile ? "gap-3 w-full" : "gap-4"
                   }`}
+                  initial={reducedMotion ? {} : { opacity: 0, x: -20 }}
+                  animate={reducedMotion ? {} : { opacity: 1, x: 0 }}
+                  transition={reducedMotion ? {} : { delay: 0.2 }}
                 >
                   <motion.div
-                    className="h-full bg-gradient-to-r from-primary via-primary/90 to-primary/80 rounded-full relative overflow-hidden"
-                    initial={{ width: 0 }}
-                    animate={{ width: `${progress}%` }}
-                    transition={
-                      reducedMotion
-                        ? { duration: 0.3 }
-                        : { duration: 0.8, ease: "easeOut" }
-                    }
+                    className={`bg-primary/10 rounded-xl border border-primary/20 flex-shrink-0 ${
+                      isMobile ? "p-2" : "p-3"
+                    }`}
+                    whileHover={reducedMotion ? {} : { scale: 1.05, rotate: 5 }}
+                    whileTap={reducedMotion ? {} : { scale: 0.95 }}
                   >
-                    {/* Animated shimmer effect */}
-                    {!reducedMotion && (
-                      <motion.div
-                        className="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent"
-                        initial={{ x: "-100%" }}
-                        animate={{ x: "100%" }}
-                        transition={{
-                          duration: 2,
-                          repeat: Infinity,
-                          repeatType: "loop",
-                          ease: "linear",
-                        }}
-                      />
-                    )}
+                    {currentStep.icon}
                   </motion.div>
-                </div>
-                {/* Glow effect */}
-                {!reducedMotion && (
-                  <div className="absolute inset-0 bg-gradient-to-r from-transparent via-primary/20 to-transparent rounded-full blur-sm" />
-                )}
-              </div>
-            </motion.div>
-
-            {/* Enhanced Step Indicators with Flow Lines */}
-            <motion.div
-              className="flex justify-center mt-4 sm:mt-6 gap-2 sm:gap-3 flex-wrap relative overflow-x-auto pb-2"
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.4 }}
-            >
-              {/* Flow connecting lines - hidden on small screens */}
-              <div className="absolute top-5 left-1/2 transform -translate-x-1/2 hidden lg:block">
-                <div className="flex items-center gap-3">
-                  {steps.slice(0, -1).map((_, index) => {
-                    const isCompleted = index < currentStepIndex;
-                    return (
+                  <div className="space-y-1 min-w-0">
+                    <motion.h2
+                      className={`font-bold tracking-tight ${
+                        isMobile ? "text-lg" : isTablet ? "text-xl" : "text-2xl"
+                      }`}
+                      initial={reducedMotion ? {} : { opacity: 0, y: 10 }}
+                      animate={reducedMotion ? {} : { opacity: 1, y: 0 }}
+                      transition={reducedMotion ? {} : { delay: 0.3 }}
+                    >
+                      {currentStep.title}
+                    </motion.h2>
+                    <motion.p
+                      className={`text-muted-foreground leading-relaxed ${
+                        isMobile
+                          ? "text-sm"
+                          : isTablet
+                            ? "text-base"
+                            : "text-lg"
+                      }`}
+                      initial={reducedMotion ? {} : { opacity: 0, y: 10 }}
+                      animate={reducedMotion ? {} : { opacity: 1, y: 0 }}
+                      transition={reducedMotion ? {} : { delay: 0.4 }}
+                    >
+                      {currentStep.description}
+                    </motion.p>
+                    {currentStep.optional && (
                       <motion.div
-                        key={index}
-                        className={`w-8 h-0.5 transition-colors duration-300 ${
-                          isCompleted ? "bg-primary" : "bg-muted"
-                        }`}
-                        initial={{ scaleX: 0 }}
-                        animate={{ scaleX: isCompleted ? 1 : 0.3 }}
-                        transition={{ delay: index * 0.1 }}
-                      />
-                    );
-                  })}
-                </div>
+                        initial={
+                          reducedMotion ? {} : { opacity: 0, scale: 0.8 }
+                        }
+                        animate={reducedMotion ? {} : { opacity: 1, scale: 1 }}
+                        transition={reducedMotion ? {} : { delay: 0.5 }}
+                      >
+                        <Badge variant="secondary" className="mt-2">
+                          Optional
+                        </Badge>
+                      </motion.div>
+                    )}
+                  </div>
+                </motion.div>
+                <motion.div
+                  className={`flex items-center gap-2 flex-shrink-0 ${
+                    isMobile ? "self-end" : ""
+                  }`}
+                  initial={reducedMotion ? {} : { opacity: 0, scale: 0.8 }}
+                  animate={reducedMotion ? {} : { opacity: 1, scale: 1 }}
+                  transition={reducedMotion ? {} : { delay: 0.3 }}
+                >
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setIsHeaderMinimized(true)}
+                  >
+                    <Minimize2 className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size={isMobile ? "sm" : "sm"}
+                    onClick={() => {
+                      if (currentStepIndex === steps.length - 1) {
+                        markTourCompletedMutation.mutate();
+                      } else {
+                        onClose();
+                      }
+                    }}
+                    className={`text-muted-foreground hover:text-foreground p-0 ${
+                      isMobile ? "h-7 w-7" : "h-8 w-8"
+                    }`}
+                  >
+                    <X className={isMobile ? "h-3 w-3" : "h-4 w-4"} />
+                  </Button>
+                </motion.div>
               </div>
 
-              {steps.map((step, index) => {
-                const isCompleted =
-                  completedSteps.has(step.id) || index < currentStepIndex;
-                const isCurrent = index === currentStepIndex;
-                const isVisited = visitedSteps.has(index);
-                const isOptional = step.optional;
-
-                return (
-                  <Tooltip key={step.id}>
-                    <TooltipTrigger asChild>
-                      <motion.button
-                        onClick={() => handleStepClick(index)}
-                        whileHover={{ scale: 1.1 }}
-                        whileTap={{ scale: 0.95 }}
-                        className={`relative w-10 h-10 sm:w-12 sm:h-12 rounded-full text-xs font-semibold transition-all duration-300 border-2 z-10 flex-shrink-0 ${
-                          isCurrent
-                            ? "bg-primary text-primary-foreground shadow-lg ring-4 ring-primary/20 border-primary"
-                            : isCompleted
-                              ? "bg-green-500 text-white shadow-md border-green-500"
-                              : isVisited
-                                ? "bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 border-blue-300 dark:border-blue-600"
-                                : "bg-secondary text-muted-foreground hover:bg-secondary/80 hover:scale-105 border-muted"
-                        }`}
+              {/* Enhanced Progress Bar */}
+              <motion.div
+                className={isMobile ? "space-y-3" : "space-y-4"}
+                initial={reducedMotion ? {} : { opacity: 0, y: 10 }}
+                animate={reducedMotion ? {} : { opacity: 1, y: 0 }}
+                transition={reducedMotion ? {} : { delay: 0.5 }}
+              >
+                <div
+                  className={`flex items-center text-sm ${
+                    isMobile ? "flex-col gap-2" : "justify-between"
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <motion.span
+                      className="font-medium"
+                      key={currentStepIndex}
+                      initial={reducedMotion ? {} : { scale: 0.8 }}
+                      animate={reducedMotion ? {} : { scale: 1 }}
+                      transition={
+                        reducedMotion ? {} : { type: "spring", stiffness: 300 }
+                      }
+                    >
+                      Step {currentStepIndex + 1} of {steps.length}
+                    </motion.span>
+                    {completedSteps.has(currentStep.id) && (
+                      <motion.div
+                        initial={
+                          reducedMotion
+                            ? {}
+                            : { opacity: 0, scale: 0.5, rotate: -180 }
+                        }
+                        animate={
+                          reducedMotion
+                            ? {}
+                            : { opacity: 1, scale: 1, rotate: 0 }
+                        }
+                        transition={
+                          reducedMotion
+                            ? {}
+                            : { type: "spring", stiffness: 200 }
+                        }
                       >
-                        {isCompleted && !isCurrent ? (
-                          <CheckCircle className="h-4 w-4 sm:h-5 sm:w-5 mx-auto" />
-                        ) : (
-                          <span className="text-xs sm:text-sm">
-                            {index + 1}
-                          </span>
-                        )}
+                        <Badge variant="secondary" className="text-xs">
+                          <CheckCircle className="h-3 w-3 mr-1" />
+                          Completed
+                        </Badge>
+                      </motion.div>
+                    )}
+                  </div>
+                  <motion.span
+                    className="text-muted-foreground font-medium"
+                    key={Math.round(progress)}
+                    initial={reducedMotion ? {} : { opacity: 0.5 }}
+                    animate={reducedMotion ? {} : { opacity: 1 }}
+                  >
+                    {Math.round(progress)}% complete
+                  </motion.span>
+                </div>
+                <div className="relative">
+                  <div
+                    className={`w-full bg-secondary/50 rounded-full overflow-hidden ${
+                      isMobile ? "h-2" : "h-3"
+                    }`}
+                  >
+                    <motion.div
+                      className="h-full bg-gradient-to-r from-primary via-primary/90 to-primary/80 rounded-full relative overflow-hidden"
+                      initial={{ width: 0 }}
+                      animate={{ width: `${progress}%` }}
+                      transition={
+                        reducedMotion
+                          ? { duration: 0.3 }
+                          : { duration: 0.8, ease: "easeOut" }
+                      }
+                    >
+                      {!reducedMotion && (
+                        <motion.div
+                          className="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent"
+                          initial={{ x: "-100%" }}
+                          animate={{ x: "100%" }}
+                          transition={{
+                            duration: 2,
+                            repeat: Infinity,
+                            repeatType: "loop",
+                            ease: "linear",
+                          }}
+                        />
+                      )}
+                    </motion.div>
+                  </div>
+                  {!reducedMotion && (
+                    <div className="absolute inset-0 bg-gradient-to-r from-transparent via-primary/20 to-transparent rounded-full blur-sm" />
+                  )}
+                </div>
+              </motion.div>
 
-                        {/* Optional step indicator */}
-                        {isOptional && (
-                          <div className="absolute -top-1 -right-1 w-4 h-4 bg-yellow-500 rounded-full flex items-center justify-center">
-                            <span className="text-xs text-white font-bold">
-                              ?
+              {/* Enhanced Step Indicators with Flow Lines */}
+              <motion.div
+                className="flex justify-center mt-4 sm:mt-6 gap-2 sm:gap-3 flex-wrap relative overflow-x-auto pb-2"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.4 }}
+              >
+                {/* Flow connecting lines - hidden on small screens */}
+                <div className="absolute top-5 left-1/2 transform -translate-x-1/2 hidden lg:block">
+                  <div className="flex items-center gap-3">
+                    {steps.slice(0, -1).map((_, index) => {
+                      const isCompleted = index < currentStepIndex;
+                      return (
+                        <motion.div
+                          key={index}
+                          className={`w-8 h-0.5 transition-colors duration-300 ${
+                            isCompleted ? "bg-primary" : "bg-muted"
+                          }`}
+                          initial={{ scaleX: 0 }}
+                          animate={{ scaleX: isCompleted ? 1 : 0.3 }}
+                          transition={{ delay: index * 0.1 }}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {steps.map((step, index) => {
+                  const isCompleted =
+                    completedSteps.has(step.id) || index < currentStepIndex;
+                  const isCurrent = index === currentStepIndex;
+                  const isVisited = visitedSteps.has(index);
+                  const isOptional = step.optional;
+
+                  return (
+                    <Tooltip key={step.id}>
+                      <TooltipTrigger asChild>
+                        <motion.button
+                          onClick={() => handleStepClick(index)}
+                          whileHover={{ scale: 1.1 }}
+                          whileTap={{ scale: 0.95 }}
+                          className={`relative w-10 h-10 sm:w-12 sm:h-12 rounded-full text-xs font-semibold transition-all duration-300 border-2 z-10 flex-shrink-0 ${
+                            isCurrent
+                              ? "bg-primary text-primary-foreground shadow-lg ring-4 ring-primary/20 border-primary"
+                              : isCompleted
+                                ? "bg-green-500 text-white shadow-md border-green-500"
+                                : isVisited
+                                  ? "bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 border-blue-300 dark:border-blue-600"
+                                  : "bg-secondary text-muted-foreground hover:bg-secondary/80 hover:scale-105 border-muted"
+                          }`}
+                        >
+                          {isCompleted && !isCurrent ? (
+                            <CheckCircle className="h-4 w-4 sm:h-5 sm:w-5 mx-auto" />
+                          ) : (
+                            <span className="text-xs sm:text-sm">
+                              {index + 1}
                             </span>
-                          </div>
-                        )}
-
-                        {/* Current step pulse */}
-                        {isCurrent && (
-                          <motion.div
-                            className="absolute inset-0 rounded-full border-2 border-primary"
-                            animate={{
-                              scale: [1, 1.2, 1],
-                              opacity: [0.5, 0.8, 0.5],
-                            }}
-                            transition={{ duration: 2, repeat: Infinity }}
-                          />
-                        )}
-
-                        {/* Visited step indicator */}
-                        {isVisited && !isCurrent && !isCompleted && (
-                          <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-2 h-2 bg-blue-500 rounded-full" />
-                        )}
-                      </motion.button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      <div className="space-y-1">
-                        <p className="text-sm font-medium flex items-center gap-2">
-                          {step.title}
-                          {isOptional && (
-                            <Badge variant="secondary" className="text-xs">
-                              Optional
-                            </Badge>
                           )}
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          {step.description}
-                        </p>
-                        {isCurrent && (
-                          <p className="text-xs text-primary font-medium">
-                            Current step
+
+                          {/* Optional step indicator */}
+                          {isOptional && (
+                            <div className="absolute -top-1 -right-1 w-4 h-4 bg-yellow-500 rounded-full flex items-center justify-center">
+                              <span className="text-xs text-white font-bold">
+                                ?
+                              </span>
+                            </div>
+                          )}
+
+                          {/* Current step pulse */}
+                          {isCurrent && (
+                            <motion.div
+                              className="absolute inset-0 rounded-full border-2 border-primary"
+                              animate={{
+                                scale: [1, 1.2, 1],
+                                opacity: [0.5, 0.8, 0.5],
+                              }}
+                              transition={{ duration: 2, repeat: Infinity }}
+                            />
+                          )}
+
+                          {/* Visited step indicator */}
+                          {isVisited && !isCurrent && !isCompleted && (
+                            <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-2 h-2 bg-blue-500 rounded-full" />
+                          )}
+                        </motion.button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <div className="space-y-1">
+                          <p className="text-sm font-medium flex items-center gap-2">
+                            {step.title}
+                            {isOptional && (
+                              <Badge variant="secondary" className="text-xs">
+                                Optional
+                              </Badge>
+                            )}
                           </p>
-                        )}
-                        {isCompleted && (
-                          <p className="text-xs text-green-600 font-medium">
-                            ✓ Completed
+                          <p className="text-xs text-muted-foreground">
+                            {step.description}
                           </p>
-                        )}
-                        {isVisited && !isCurrent && !isCompleted && (
-                          <p className="text-xs text-blue-600 font-medium">
-                            Previously visited
-                          </p>
-                        )}
-                      </div>
-                    </TooltipContent>
-                  </Tooltip>
-                );
-              })}
-            </motion.div>
-          </div>
+                          {isCurrent && (
+                            <p className="text-xs text-primary font-medium">
+                              Current step
+                            </p>
+                          )}
+                          {isCompleted && (
+                            <p className="text-xs text-green-600 font-medium">
+                              ✓ Completed
+                            </p>
+                          )}
+                          {isVisited && !isCurrent && !isCompleted && (
+                            <p className="text-xs text-blue-600 font-medium">
+                              Previously visited
+                            </p>
+                          )}
+                        </div>
+                      </TooltipContent>
+                    </Tooltip>
+                  );
+                })}
+              </motion.div>
+            </div>
+          )}
 
           {/* Enhanced Content */}
           <div
             className={`overflow-y-auto ${
-              isMobile
-                ? "p-4 max-h-[45vh]"
-                : isTablet
-                  ? "p-6 max-h-[50vh]"
-                  : "p-8 max-h-[55vh]"
+              isHeaderMinimized
+                ? isMobile
+                  ? "p-3 max-h-[68vh]"
+                  : isTablet
+                    ? "p-4 max-h-[76vh]"
+                    : "p-6 max-h-[80vh]"
+                : isMobile
+                  ? "p-4 max-h-[45vh]"
+                  : isTablet
+                    ? "p-6 max-h-[50vh]"
+                    : "p-8 max-h-[55vh]"
             }`}
           >
+            {false && (
+              <div className="sticky top-0 z-10 -mt-1 -mx-1 px-3 py-2 mb-2 bg-background/90 backdrop-blur border rounded-lg flex items-center justify-between">
+                <div className="text-xs sm:text-sm font-medium truncate">
+                  {currentStepIndex + 1}/{steps.length}
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-24 sm:w-32 h-1 bg-secondary rounded">
+                    <div
+                      className="h-1 bg-primary rounded"
+                      style={{ width: `${Math.round(progress)}%` }}
+                    />
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    onClick={() => setIsHeaderMinimized(false)}
+                  >
+                    <Maximize2 className="h-3 w-3" />
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {isMobile && (
+              <div className="sticky bottom-0 z-10 mt-3 -mx-1 px-2 py-2 bg-background/95 backdrop-blur border rounded-lg flex items-center justify-between">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handlePrevious}
+                  disabled={currentStepIndex === 0 || isTransitioning}
+                >
+                  <ArrowLeft className="h-4 w-4 mr-1" /> Prev
+                </Button>
+                <div className="text-xs text-muted-foreground">
+                  {Math.round(progress)}% • {currentStepIndex + 1} /{" "}
+                  {steps.length}
+                </div>
+                {currentStepIndex < steps.length - 1 ? (
+                  <Button
+                    size="sm"
+                    onClick={handleNext}
+                    disabled={isTransitioning}
+                  >
+                    Next <ArrowRight className="h-4 w-4 ml-1" />
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    onClick={() => markTourCompletedMutation.mutate()}
+                  >
+                    Finish <CheckCircle className="h-4 w-4 ml-1" />
+                  </Button>
+                )}
+              </div>
+            )}
             <AnimatePresence mode="wait">
               <motion.div
                 key={currentStep.id}
@@ -6196,13 +7042,7 @@ function OnboardingGuide({
                 }`}
               >
                 {/* Enhanced Progress indicator */}
-                <div
-                  className={`flex items-center gap-2 text-sm text-muted-foreground ${
-                    isMobile
-                      ? "justify-center order-2"
-                      : "justify-center sm:justify-start"
-                  }`}
-                >
+                <div className="hidden">
                   <motion.span
                     key={`${currentStepIndex + 1}-${steps.length}`}
                     initial={reducedMotion ? {} : { scale: 0.8, opacity: 0.5 }}
@@ -6555,6 +7395,7 @@ function BlogPostPage() {
     enabled: !!slug,
   });
 
+  const { brandGuidelines } = useBrandContext();
   const postUrl = window.location.href;
 
   if (isLoading) {
@@ -6614,6 +7455,87 @@ function BlogPostPage() {
         />
       )}
       <h1 className="text-5xl font-extrabold mb-4">{post.title}</h1>
+      <div className="flex items-center gap-2 mb-2">
+        <Badge
+          variant="secondary"
+          className="w-fit text-[10px] px-2 py-0.5 flex-shrink-0 bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200 border-green-200 dark:border-green-800"
+        >
+          On‑brand
+        </Badge>
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 flex-shrink-0"
+              aria-label="Why this captures your Brand Vibe"
+            >
+              <Info className="h-4 w-4 text-muted-foreground" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent
+            side="bottom"
+            align="start"
+            className="max-w-xs text-xs leading-relaxed"
+          >
+            <div className="space-y-1">
+              <p className="font-medium">Why this captures your Brand Vibe</p>
+              {brandGuidelines ? (
+                <>
+                  <p>
+                    Voice:{" "}
+                    <span className="font-medium">
+                      {brandGuidelines?.brandVoice || "—"}
+                    </span>
+                  </p>
+                  {Array.isArray(brandGuidelines?.tonePriorities) &&
+                    (brandGuidelines?.tonePriorities as any[]).length > 0 && (
+                      <p>
+                        Tone:{" "}
+                        <span className="font-medium">
+                          {(brandGuidelines?.tonePriorities as any[])
+                            .slice(0, 2)
+                            .join(", ")}
+                        </span>
+                      </p>
+                    )}
+                  {Array.isArray(brandGuidelines?.phrasesToUse) &&
+                    (brandGuidelines?.phrasesToUse as any[]).length > 0 && (
+                      <p>
+                        Uses:{" "}
+                        <span className="font-medium">
+                          {(brandGuidelines?.phrasesToUse as any[])
+                            .slice(0, 2)
+                            .join(", ")}
+                        </span>
+                      </p>
+                    )}
+                  {Array.isArray(brandGuidelines?.phrasesToAvoid) &&
+                    (brandGuidelines?.phrasesToAvoid as any[]).length > 0 && (
+                      <p>
+                        Avoids:{" "}
+                        <span className="font-medium">
+                          {(brandGuidelines?.phrasesToAvoid as any[])
+                            .slice(0, 2)
+                            .join(", ")}
+                        </span>
+                      </p>
+                    )}
+                  <p className="text-muted-foreground">
+                    Enforced: no emojis, simple punctuation, no AI mentions,
+                    concise sentences.
+                  </p>
+                </>
+              ) : (
+                <p>
+                  Complete Brand Vibe in Settings to apply your voice and tone
+                  consistently.
+                </p>
+              )}
+            </div>
+          </PopoverContent>
+        </Popover>
+      </div>
       <div className="text-muted-foreground mb-8">
         <span>
           Published on {post.publishedAt ? formatDate(post.publishedAt) : ""}{" "}
@@ -6890,7 +7812,7 @@ function StructuredData({ data }: { data: object }) {
 function HomePage() {
   const { toast } = useToast();
   const navigate = useNavigate();
-  const [currentTime, setCurrentTime] = useState(new Date());
+
   const [showNotificationCenter, setShowNotificationCenter] = useState(false);
 
   const [lastEngagementCheck, setLastEngagementCheck] = useState<Date | null>(
@@ -6898,11 +7820,15 @@ function HomePage() {
   );
   const notificationCenterRef = useRef<HTMLDivElement>(null);
 
-  // Update time every minute for live clock
-  useEffect(() => {
-    const timer = setInterval(() => setCurrentTime(new Date()), 60000);
-    return () => clearInterval(timer);
-  }, []);
+  // Focus Mode state
+  const [focusMode, setFocusMode] = useState(true);
+  const [showCustomize, setShowCustomize] = useState(false);
+  const [showHubs, setShowHubs] = useState(false);
+  const [showPerformance, setShowPerformance] = useState(false);
+  const [showTrends, setShowTrends] = useState(false);
+  const [showNextUp, setShowNextUp] = useState(false);
+
+  // Removed minute-by-minute ticking to prevent full dashboard re-renders that caused number flicker.
 
   // Click outside handler for notification center
   useEffect(() => {
@@ -6962,6 +7888,7 @@ function HomePage() {
   });
 
   const [cacheKey, setCacheKey] = useState<string | null>(null);
+  const hasTriggeredRef = useRef<boolean>(false);
   // Keep last completed summary to prevent flicker while new data generates
   const [lastSummary, setLastSummary] = useState<any | null>(null);
 
@@ -6993,10 +7920,19 @@ function HomePage() {
 
   useEffect(() => {
     // Trigger dashboard generation if user has connected accounts OR brand setup
-    if (!cacheKey && (hasConnectedAccounts || hasBrandSetup)) {
+    if (
+      !cacheKey &&
+      (hasConnectedAccounts || hasBrandSetup) &&
+      !hasTriggeredRef.current
+    ) {
+      hasTriggeredRef.current = true;
       triggerGeneration();
     }
-  }, [cacheKey, hasConnectedAccounts, hasBrandSetup]); // Removed triggerGeneration from dependencies to prevent auto-refresh
+    // Once we have a cacheKey, allow manual refreshes to run again without duplicate auto-triggers
+    if (cacheKey && hasTriggeredRef.current) {
+      hasTriggeredRef.current = false;
+    }
+  }, [cacheKey, hasConnectedAccounts, hasBrandSetup]);
 
   const { data: summaryResult } = useQuery({
     queryKey: ["dashboardSummary", cacheKey],
@@ -7006,17 +7942,21 @@ function HomePage() {
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
     keepPreviousData: true,
+    staleTime: 60 * 1000,
+    notifyOnChangeProps: ["data", "status"],
+    refetchOnMount: false,
   });
 
   const summary =
     summaryResult?.status === "COMPLETED" ? summaryResult.data : lastSummary;
+  const shouldAwaitSummary =
+    (hasConnectedAccounts || hasBrandSetup) && !summary;
   // Only show generating state if user has connected accounts and we're actually generating
   const isGenerating =
-    hasConnectedAccounts &&
-    (summaryResult?.status === "GENERATING" ||
-      summaryResult?.status === "PENDING" ||
-      isTriggering ||
-      (!summaryResult && cacheKey));
+    summaryResult?.status === "GENERATING" ||
+    summaryResult?.status === "PENDING" ||
+    isTriggering ||
+    (!summaryResult && cacheKey);
 
   // Preserve last completed summary to avoid UI flicker during refreshes
   useEffect(() => {
@@ -7025,18 +7965,51 @@ function HomePage() {
     }
   }, [summaryResult?.status, summaryResult?.data]);
 
-  // Get personalized greeting based on time of day
+  // Get personalized greeting based on time of day (prefers brand name)
   const getPersonalizedGreeting = () => {
-    const hour = currentTime.getHours();
-    const name = currentUser?.name ? `, ${currentUser.name.split(" ")[0]}` : "";
+    const hour = new Date().getHours();
+    const bn = (brandContext as any)?.brandGuidelines?.brandName as
+      | string
+      | undefined;
+    const displayName =
+      bn && bn.trim().length > 0
+        ? `, ${bn}`
+        : currentUser?.name
+          ? `, ${currentUser.name.split(" ")[0]}`
+          : "";
 
-    if (hour < 12) return `Good morning${name}`;
-    if (hour < 17) return `Good afternoon${name}`;
-    return `Good evening${name}`;
+    if (hour < 12) return `Good morning${displayName}`;
+    if (hour < 17) return `Good afternoon${displayName}`;
+    return `Good evening${displayName}`;
   };
 
   const greeting = getPersonalizedGreeting();
   const subGreeting = "Here’s your command center for today.";
+
+  // Keyboard shortcut: toggle Focus Mode with "F"
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      if (
+        tag === "input" ||
+        tag === "textarea" ||
+        (target as any)?.isContentEditable
+      )
+        return;
+      if (
+        (e.key === "f" || e.key === "F") &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey
+      ) {
+        e.preventDefault();
+        setFocusMode((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey as any);
+    return () => window.removeEventListener("keydown", onKey as any);
+  }, []);
 
   // Update engagement check timestamp
   useEffect(() => {
@@ -7355,7 +8328,7 @@ function HomePage() {
         </EmptyState>
 
         {!hasAccounts && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 max-w-4xl mx-auto">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 max-w-5xl mx-auto">
             <Card className="p-6 text-center">
               <div className="mx-auto w-12 h-12 bg-blue-100 dark:bg-blue-900/30 rounded-lg flex items-center justify-center mb-4">
                 <MessageSquare className="h-6 w-6 text-blue-600 dark:text-blue-400" />
@@ -7477,7 +8450,7 @@ function HomePage() {
     </motion.div>
   );
 
-  if (isGenerating && !summary) {
+  if ((isGenerating || shouldAwaitSummary) && !summary) {
     return (
       <div>
         <h1 className="text-3xl font-bold mb-2 flex items-center gap-3 gradient-text">
@@ -7590,35 +8563,72 @@ function HomePage() {
             <span className="font-medium truncate max-w-[180px]">
               {greeting}
             </span>
-            <span className="hidden sm:inline">• Live Dashboard</span>
-            <span className="hidden lg:inline border-l border-border/50 pl-2">
-              Updated just now
+            <span>
+              • Live ·{" "}
+              {isGenerating ? (
+                <span className="inline-flex items-center gap-1">
+                  <RefreshCw className="h-3 w-3 animate-spin" />
+                  updating
+                </span>
+              ) : (
+                "now"
+              )}
             </span>
           </div>
+
+          {summary?.engagementChange && summary.engagementChange < -10 && (
+            <div className="hidden md:flex items-center gap-2 ml-2">
+              <span className="text-[11px] font-semibold px-2 py-1 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300 border border-amber-200/50 dark:border-amber-800/50">
+                Engagement −{Math.abs(summary.engagementChange).toFixed(0)}%
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-[11px] text-amber-800 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/30"
+                onClick={() => navigate("/analytics")}
+              >
+                Act
+              </Button>
+            </div>
+          )}
+
+          {/* Utilities: Customize (icon-only) */}
+          <div className="flex items-center mr-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setShowCustomize(true)}
+              title="Customize"
+              className="text-muted-foreground hover:text-foreground"
+            >
+              <Settings className="h-4 w-4" />
+            </Button>
+          </div>
+
           <Button
             variant="ghost"
-            size="sm"
+            size="icon"
             onClick={() => triggerGeneration()}
             disabled={isTriggering}
+            title="Refresh"
             className="text-muted-foreground hover:text-foreground hover:bg-primary/5 transition-all duration-200"
           >
+            {" "}
             <RefreshCw
-              className={`h-4 w-4 mr-2 ${isTriggering ? "animate-spin" : ""}`}
+              className={`h-4 w-4 ${isTriggering ? "animate-spin" : ""}`}
             />
-            <span className="hidden sm:inline">Refresh</span>
-            <span className="sm:hidden">Sync</span>
           </Button>
           <Button
             variant="outline"
-            size="sm"
+            size="icon"
             onClick={() => {
               window.dispatchEvent(new CustomEvent("showOnboarding"));
             }}
+            title="Guide"
             className="border-primary/20 hover:border-primary/40 hover:bg-primary/5 transition-all duration-200"
           >
-            <HelpCircle className="h-4 w-4 mr-2" />
-            <span className="hidden sm:inline">Guide</span>
-            <span className="sm:hidden">Help</span>
+            {" "}
+            <HelpCircle className="h-4 w-4" />
           </Button>
         </div>
       </motion.div>
@@ -7710,6 +8720,34 @@ function HomePage() {
                 <BarChart3 className="h-4 w-4 mr-3" />
                 Analytics
               </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="w-full justify-start text-left h-10"
+                onClick={() => {
+                  setShowCustomize(true);
+                  document
+                    .getElementById("mobile-quick-menu")
+                    ?.classList.add("hidden");
+                }}
+              >
+                <Settings className="h-4 w-4 mr-3" />
+                Customize
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="w-full justify-start text-left h-10"
+                onClick={() => {
+                  window.dispatchEvent(new CustomEvent("showOnboarding"));
+                  document
+                    .getElementById("mobile-quick-menu")
+                    ?.classList.add("hidden");
+                }}
+              >
+                <HelpCircle className="h-4 w-4 mr-3" />
+                Guide
+              </Button>
             </div>
           </div>
         </div>
@@ -7724,7 +8762,7 @@ function HomePage() {
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => navigate("/settings")}
+              onClick={() => setShowCustomize(true)}
               className="text-xs text-muted-foreground hover:text-foreground h-5 px-2"
             >
               Customize
@@ -7739,7 +8777,7 @@ function HomePage() {
                 <motion.div
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
-                  className="relative"
+                  className="relative order-2"
                 >
                   <Button
                     variant="ghost"
@@ -7754,23 +8792,25 @@ function HomePage() {
                     }}
                   >
                     <MessageSquare className="h-3 w-3 mr-1" />
-                    {summary.pendingCommentsCount}
+                    Respond
+                    <span className="ml-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-600 text-white text-[10px] px-1">
+                      {summary.pendingCommentsCount}
+                    </span>
                   </Button>
                 </motion.div>
               )}
 
             {/* Create - Only show if there are drafts or content ideas */}
-            {((summary?.draftContentCount && summary.draftContentCount > 0) ||
-              (summary?.contentIdeasCount &&
-                summary.contentIdeasCount > 0)) && (
+            {true && (
               <motion.div
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
+                className="order-1"
               >
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="h-8 px-3 rounded-lg bg-gradient-to-r from-green-50/80 to-green-100/80 dark:from-green-900/40 dark:to-green-800/30 hover:from-green-100 hover:to-green-200/80 dark:hover:from-green-800/60 dark:hover:to-green-700/40 border border-green-200/60 dark:border-green-700/60 hover:border-green-300 dark:hover:border-green-600 shadow-sm hover:shadow-md transition-all duration-200 text-green-700 dark:text-green-300 font-medium"
+                  className="h-8 px-3 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 border border-primary/20 shadow-sm hover:shadow-md transition-all duration-200 font-medium"
                   onClick={() => {
                     navigate("/create");
                     toast({
@@ -7791,11 +8831,13 @@ function HomePage() {
                 <motion.div
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
+                  className="order-3"
                 >
+                  {" "}
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="h-8 px-3 rounded-lg bg-gradient-to-r from-orange-50/80 to-orange-100/80 dark:from-orange-900/40 dark:to-orange-800/30 hover:from-orange-100 hover:to-orange-200/80 dark:hover:from-orange-800/60 dark:hover:to-orange-700/40 border border-orange-200/60 dark:border-orange-700/60 hover:border-orange-300 dark:hover:border-orange-600 shadow-sm hover:shadow-md transition-all duration-200 text-orange-700 dark:text-orange-300 font-medium"
+                    className="h-8 px-2.5 rounded-full bg-gradient-to-r from-orange-50/80 to-orange-100/80 dark:from-orange-900/40 dark:to-orange-800/30 hover:from-orange-100 hover:to-orange-200/80 dark:hover:from-orange-800/60 dark:hover:to-orange-700/40 border border-orange-200/60 dark:border-orange-700/60 hover:border-orange-300 dark:hover:border-orange-600 shadow-sm hover:shadow-md transition-all duration-200 text-orange-700 dark:text-orange-300 font-medium"
                     onClick={() => {
                       navigate("/discover", {
                         state: { activeTab: "insights" },
@@ -7813,11 +8855,15 @@ function HomePage() {
               )}
 
             {/* Always show sync and analytics as core utilities */}
-            <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
+            <motion.div
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              className="order-5"
+            >
               <Button
                 variant="ghost"
                 size="sm"
-                className={`h-8 px-3 rounded-lg bg-gradient-to-r from-blue-50/80 to-blue-100/80 dark:from-blue-900/40 dark:to-blue-800/30 hover:from-blue-100 hover:to-blue-200/80 dark:hover:from-blue-800/60 dark:hover:to-blue-700/40 border border-blue-200/60 dark:border-blue-700/60 hover:border-blue-300 dark:hover:border-blue-600 shadow-sm hover:shadow-md transition-all duration-200 text-blue-700 dark:text-blue-300 font-medium ${
+                className={`h-8 px-2.5 rounded-full bg-gradient-to-r from-blue-50/80 to-blue-100/80 dark:from-blue-900/40 dark:to-blue-800/30 hover:from-blue-100 hover:to-blue-200/80 dark:hover:from-blue-800/60 dark:hover:to-blue-700/40 border border-blue-200/60 dark:border-blue-700/60 hover:border-blue-300 dark:hover:border-blue-600 shadow-sm hover:shadow-md transition-all duration-200 text-blue-700 dark:text-blue-300 font-medium ${
                   fetchCommentsMutation.isLoading ? "animate-pulse" : ""
                 }`}
                 onClick={() => {
@@ -7839,11 +8885,15 @@ function HomePage() {
               </Button>
             </motion.div>
 
-            <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
+            <motion.div
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              className="order-5"
+            >
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-8 px-3 rounded-lg bg-gradient-to-r from-indigo-50/80 to-indigo-100/80 dark:from-indigo-900/40 dark:to-indigo-800/30 hover:from-indigo-100 hover:to-indigo-200/80 dark:hover:from-indigo-800/60 dark:hover:to-indigo-700/40 border border-indigo-200/60 dark:border-indigo-700/60 hover:border-indigo-300 dark:hover:border-indigo-600 shadow-sm hover:shadow-md transition-all duration-200 text-indigo-700 dark:text-indigo-300 font-medium"
+                className="h-8 px-2.5 rounded-full bg-gradient-to-r from-indigo-50/80 to-indigo-100/80 dark:from-indigo-900/40 dark:to-indigo-800/30 hover:from-indigo-100 hover:to-indigo-200/80 dark:hover:from-indigo-800/60 dark:hover:to-indigo-700/40 border border-indigo-200/60 dark:border-indigo-700/60 hover:border-indigo-300 dark:hover:border-indigo-600 shadow-sm hover:shadow-md transition-all duration-200 text-indigo-700 dark:text-indigo-300 font-medium"
                 onClick={() => {
                   navigate("/analytics");
                   toast({
@@ -7859,47 +8909,444 @@ function HomePage() {
           </div>
 
           {/* Smart Context Alert - Only show when there are actionable issues */}
-          {((summary?.engagementChange && summary.engagementChange < -10) ||
-            (summary?.actionableRecommendations &&
-              summary.actionableRecommendations.length > 0)) && (
-            <motion.div
-              className="mt-3 pt-3 border-t border-border/50 flex items-center justify-between"
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: "auto" }}
-              transition={{ delay: 0.5, duration: 0.4 }}
-            >
-              <div className="flex items-center gap-2 text-sm">
-                <AlertCircle className="h-3 w-3 text-yellow-600 dark:text-yellow-400" />
-                <span className="font-medium text-yellow-800 dark:text-yellow-200 text-xs">
-                  {summary?.engagementChange && summary.engagementChange < -10
-                    ? `Engagement down ${Math.abs(summary.engagementChange).toFixed(0)}%`
-                    : `${summary?.actionableRecommendations?.length || 0} new insights`}
-                </span>
-              </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-xs h-5 px-2 text-yellow-700 dark:text-yellow-300 hover:bg-yellow-100 dark:hover:bg-yellow-900/30"
-                onClick={() => {
-                  if (
-                    summary?.engagementChange &&
-                    summary.engagementChange < -10
-                  ) {
-                    navigate("/analytics");
-                  } else {
-                    navigate("/discover", { state: { activeTab: "insights" } });
-                  }
-                }}
+          {summary?.actionableRecommendations &&
+            summary.actionableRecommendations.length > 0 && (
+              <motion.div
+                className="mt-3 pt-3 border-t border-border/50 flex items-center justify-between"
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                transition={{ delay: 0.5, duration: 0.4 }}
               >
-                Take Action
-              </Button>
-            </motion.div>
-          )}
+                <div className="flex items-center gap-2 text-sm">
+                  <AlertCircle className="h-3 w-3 text-yellow-600 dark:text-yellow-400" />
+                  <span className="font-medium text-yellow-800 dark:text-yellow-200 text-xs">
+                    {false
+                      ? `Engagement down ${Math.abs(summary.engagementChange).toFixed(0)}%`
+                      : `${summary?.actionableRecommendations?.length || 0} new insights`}
+                  </span>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-xs h-5 px-2 text-yellow-700 dark:text-yellow-300 hover:bg-yellow-100 dark:hover:bg-yellow-900/30"
+                  onClick={() => {
+                    if (
+                      summary?.engagementChange &&
+                      summary.engagementChange < -10
+                    ) {
+                      navigate("/analytics");
+                    } else {
+                      navigate("/discover", {
+                        state: { activeTab: "insights" },
+                      });
+                    }
+                  }}
+                >
+                  Act
+                </Button>
+              </motion.div>
+            )}
         </div>
       </motion.div>
 
+      {/* Focus Mode - minimal Today view */}
+      {focusMode && (
+        <div className="space-y-4 md:space-y-6">
+          {/* Right-side Customize Panel */}
+          <Sheet open={showCustomize} onOpenChange={setShowCustomize}>
+            <SheetContent side="right" className="w-full sm:w-[420px]">
+              <SheetHeader>
+                <SheetTitle>Customize Focus View</SheetTitle>
+                <SheetDescription>
+                  Choose what appears when Focus Mode is on.
+                </SheetDescription>
+              </SheetHeader>
+              <div className="py-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm">Hub Cards</span>
+                  <Switch
+                    checked={showHubs}
+                    onCheckedChange={(v) => setShowHubs(!!v)}
+                  />
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm">Performance Overview</span>
+                  <Switch
+                    checked={showPerformance}
+                    onCheckedChange={(v) => setShowPerformance(!!v)}
+                  />
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm">Trending Insights</span>
+                  <Switch
+                    checked={showTrends}
+                    onCheckedChange={(v) => setShowTrends(!!v)}
+                  />
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm">Next Up</span>
+                  <Switch
+                    checked={showNextUp}
+                    onCheckedChange={(v) => setShowNextUp(!!v)}
+                  />
+                </div>
+              </div>
+              <SheetFooter>
+                <Button
+                  onClick={() => setShowCustomize(false)}
+                  className="w-full"
+                >
+                  Done
+                </Button>
+              </SheetFooter>
+            </SheetContent>
+          </Sheet>
+
+          {/* Today's Briefing - primary focus */}
+          <Card className="bg-gradient-to-br from-card via-card to-muted/20 border-border/50 shadow-sm">
+            <CardHeader className="pb-4">
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <div className="p-2 bg-primary/10 rounded-lg">
+                  <Calendar className="h-5 w-5 text-primary" />
+                </div>
+                Today's Briefing
+              </CardTitle>
+              <CardDescription className="text-sm">
+                Your daily overview and top priorities.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Critical Priority: Urgent Response Needed */}
+              {summary?.pendingCommentsCount &&
+                summary.pendingCommentsCount > 0 && (
+                  <motion.div
+                    className="p-4 bg-gradient-to-br from-red-50/90 to-orange-50/90 dark:from-red-900/30 dark:to-orange-900/30 border border-red-200/60 dark:border-red-800/60 rounded-lg shadow-sm"
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.1 }}
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="p-2 bg-red-100 dark:bg-red-900/30 rounded-lg flex-shrink-0">
+                        <AlertCircle className="h-5 w-5 text-red-600 dark:text-red-400" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-2">
+                          <h5 className="font-bold text-red-800 dark:text-red-200 text-sm">
+                            URGENT: {summary.pendingCommentsCount} Comments
+                            Awaiting Response
+                          </h5>
+                          <div className="px-2 py-0.5 bg-red-200 dark:bg-red-800 text-red-800 dark:text-red-200 text-xs font-bold rounded-full flex-shrink-0">
+                            HIGH PRIORITY
+                          </div>
+                        </div>
+                        <p className="text-xs text-red-700 dark:text-red-300 mb-3 leading-relaxed">
+                          <strong>Impact:</strong> Delayed responses can reduce
+                          engagement by up to 40%. Respond within 2 hours to
+                          maintain audience trust.
+                        </p>
+                        <div className="flex items-center gap-3">
+                          <Button
+                            size="sm"
+                            className="bg-red-600 hover:bg-red-700 text-white border-0 h-8 px-3 font-medium"
+                            onClick={() => {
+                              navigate("/engage");
+                              toast({
+                                title: "Opening Response Hub",
+                                description: `${summary.pendingCommentsCount} comments ready for your response.`,
+                              });
+                            }}
+                          >
+                            <MessageSquare className="h-3 w-3 mr-1" />
+                            Respond Now
+                          </Button>
+                          <div className="text-xs text-red-600 dark:text-red-400 font-medium">
+                            Est. time:{" "}
+                            {Math.ceil(summary.pendingCommentsCount * 1.5)}{" "}
+                            minutes
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+
+              {/* Engagement Alert */}
+              {summary?.engagementChange && summary.engagementChange < -10 && (
+                <motion.div
+                  className="p-4 bg-gradient-to-br from-amber-50/90 to-yellow-50/90 dark:from-amber-900/30 dark:to-yellow-900/30 border border-amber-200/60 dark:border-amber-800/60 rounded-lg shadow-sm"
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.2 }}
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="p-2 bg-amber-100 dark:bg-amber-900/30 rounded-lg flex-shrink-0">
+                      <TrendingDown className="h-5 w-5 text-amber-600 dark:text-amber-400" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-2">
+                        <h5 className="font-bold text-amber-800 dark:text-amber-200 text-sm">
+                          Engagement Alert: Down{" "}
+                          {Math.abs(summary.engagementChange).toFixed(0)}%
+                        </h5>
+                        <div className="px-2 py-0.5 bg-amber-200 dark:bg-amber-800 text-amber-800 dark:text-amber-200 text-xs font-bold rounded-full flex-shrink-0">
+                          ACTION NEEDED
+                        </div>
+                      </div>
+                      <p className="text-xs text-amber-700 dark:text-amber-300 mb-3 leading-relaxed">
+                        <strong>Recommendation:</strong> Post visual content,
+                        engage with trending topics, or ask questions to
+                        re-engage your audience.
+                      </p>
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          className="bg-amber-600 hover:bg-amber-700 text-white border-0 h-8 px-3 font-medium"
+                          onClick={() => {
+                            navigate("/discover", {
+                              state: { activeTab: "insights" },
+                            });
+                            toast({
+                              title: "Finding trending opportunities",
+                              description:
+                                "Discovering viral content ideas for you.",
+                            });
+                          }}
+                        >
+                          <TrendingUp className="h-3 w-3 mr-1" />
+                          Find Trends
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8 px-3 border-amber-300 hover:bg-amber-50 dark:border-amber-700 dark:hover:bg-amber-900/20 font-medium"
+                          onClick={() => {
+                            navigate("/create");
+                            toast({
+                              title: "Opening Content Lab",
+                              description: "Ready to create engaging content!",
+                            });
+                          }}
+                        >
+                          <PenSquare className="h-3 w-3 mr-1" />
+                          Create Content
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+
+              {/* Default State */}
+              {(!summary?.pendingCommentsCount ||
+                summary.pendingCommentsCount === 0) &&
+                (!summary?.engagementChange ||
+                  summary.engagementChange >= -10) && (
+                  <motion.div
+                    className="p-4 bg-gradient-to-br from-green-50/90 to-emerald-50/90 dark:from-green-900/30 dark:to-emerald-900/30 border border-green-200/60 dark:border-green-800/60 rounded-lg shadow-sm"
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.1 }}
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="p-2 bg-green-100 dark:bg-green-900/30 rounded-lg flex-shrink-0">
+                        <CheckCircle className="h-5 w-5 text-green-600 dark:text-green-400" />
+                      </div>
+                      <div className="flex-1">
+                        <h5 className="font-bold text-green-800 dark:text-green-200 text-sm mb-2">
+                          Everything looks great! 🎉
+                        </h5>
+                        <p className="text-xs text-green-700 dark:text-green-300 mb-3 leading-relaxed">
+                          Your engagement is stable and no urgent actions are
+                          needed. Consider exploring new content opportunities
+                          to grow further.
+                        </p>
+                        <div className="flex gap-2">
+                          <Button
+                            size="sm"
+                            className="bg-green-600 hover:bg-green-700 text-white border-0 h-8 px-3 font-medium"
+                            onClick={() => {
+                              navigate("/discover", {
+                                state: { activeTab: "insights" },
+                              });
+                            }}
+                          >
+                            <TrendingUp className="h-3 w-3 mr-1" />
+                            Find Trends
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-8 px-3 border-green-300 hover:bg-green-50 dark:border-green-700 dark:hover:bg-green-900/20 font-medium"
+                            onClick={() => {
+                              navigate("/create");
+                            }}
+                          >
+                            <PenSquare className="h-3 w-3 mr-1" />
+                            Create Content
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+            </CardContent>
+          </Card>
+
+          {/* Optional sections */}
+          {showHubs && (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 md:gap-4">
+              <HubCard
+                title="Response Hub"
+                description="Your comment inbox"
+                mainStat={summary?.pendingCommentsCount || 0}
+                subStat="Comments Pending"
+                icon={<MessageSquare className="h-6 w-6 text-primary" />}
+                onClick={() => navigate("/engage")}
+                ctaText="Go to Inbox"
+              />
+              <HubCard
+                title="Strategy Hub"
+                description="Your content plan"
+                mainStat={summary?.contentIdeasCount || 0}
+                subStat="Content Ideas"
+                icon={<PieChart className="h-6 w-6 text-primary" />}
+                onClick={() =>
+                  navigate("/discover", { state: { activeTab: "discover" } })
+                }
+                ctaText="View Strategy"
+              />
+              <HubCard
+                title="Content Hub"
+                description="Your media library"
+                mainStat={summary?.draftContentCount || 0}
+                subStat="Drafts Ready"
+                icon={<PenSquare className="h-6 w-6 text-primary" />}
+                onClick={() => navigate("/create")}
+                ctaText="Open Library"
+              />
+            </div>
+          )}
+
+          {showPerformance && (
+            <Card className="border-border/50 shadow-sm">
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-1">
+                    <CardTitle className="flex items-center gap-2 text-lg font-semibold">
+                      <div className="p-1.5 bg-primary/10 rounded-md">
+                        <BarChart3 className="h-4 w-4 text-primary" />
+                      </div>
+                      Performance Overview
+                    </CardTitle>
+                    <CardDescription className="text-sm text-muted-foreground">
+                      Key metrics and performance trends
+                    </CardDescription>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => navigate("/analytics")}
+                    className="hover:bg-primary/5 hover:border-primary/30 transition-all duration-200"
+                  >
+                    <ExternalLink className="h-4 w-4 mr-2" />
+                    Full Report
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4 pt-0">
+                {/* Reuse KPIs and trend bar from main layout */}
+                {/* For brevity, omit here; main card remains available when Focus Mode is off */}
+                <div className="text-sm text-muted-foreground">
+                  Key metrics are available in full dashboard view.
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {showTrends && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Trending Insights</CardTitle>
+                <CardDescription>
+                  Based on viral content potential
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="p-2">
+                {(summary?.trendingTopicsFromViral?.length ?? 0) > 0 ? (
+                  <div className="space-y-1">
+                    {summary?.trendingTopicsFromViral?.map((item) => (
+                      <div
+                        key={item.id}
+                        className="flex items-center gap-3 p-3 rounded-lg hover:bg-secondary/50 cursor-pointer transition-colors"
+                        onClick={() =>
+                          navigate("/discover", {
+                            state: {
+                              activeTab: "insights",
+                              subTab: item.sourceTab,
+                              highlightedItemId: item.sourceItemId,
+                            },
+                          })
+                        }
+                      >
+                        <div className="p-2 bg-primary/10 rounded-lg flex-shrink-0">
+                          <Flame className="h-5 w-5 text-primary" />
+                        </div>
+                        <div className="flex-1 min-w-0 space-y-2">
+                          <p className="font-semibold text-sm leading-tight truncate">
+                            {item.text}
+                          </p>
+                          <p className="text-xs text-muted-foreground truncate">
+                            {item.source}
+                          </p>
+                        </div>
+                        <ArrowRight className="h-4 w-4 text-muted-foreground flex-shrink-0 ml-auto" />
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground text-center p-6">
+                    No trending insights right now.
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
+          {showNextUp && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Next Up</CardTitle>
+                <CardDescription>Your upcoming scheduled post.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {summary?.nextScheduledPost ? (
+                  <div>
+                    <p className="text-sm font-medium">
+                      {summary?.nextScheduledPost?.content?.substring(0, 100)}
+                      ...
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-2">
+                      Posting to {summary?.nextScheduledPost?.platform} on{" "}
+                      {formatDate(
+                        summary?.nextScheduledPost?.scheduledAt ?? new Date(),
+                      )}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground text-center p-4">
+                    No posts scheduled.
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      )}
+
       {/* Optimized Layout with Enhanced Information Flow and Visual Hierarchy */}
-      <div className="grid grid-cols-1 xl:grid-cols-5 gap-4 md:gap-6">
+      <div
+        className={`grid grid-cols-1 xl:grid-cols-5 gap-4 md:gap-6 ${focusMode ? "hidden" : ""}`}
+      >
         {/* Primary Content Column - Optimized for key metrics and performance */}
         <div className="xl:col-span-3 space-y-4 md:space-y-6">
           {/* Hub Cards - Prioritized for quick access to core functions */}
@@ -8122,7 +9569,7 @@ function HomePage() {
                                 70,
                             ),
                           )
-                        : Math.random() * 60 + 20;
+                        : 40;
                       const engagementHeight = summary?.performanceTrends
                         ? Math.max(
                             10,
@@ -8138,7 +9585,7 @@ function HomePage() {
                                 60,
                             ),
                           )
-                        : Math.random() * 50 + 15;
+                        : 35;
 
                       return (
                         <div
@@ -8811,7 +10258,7 @@ function WaitlistForm() {
           transition={{ duration: 0.5, delay: 0.4 }}
           className="relative"
         >
-          <div className="absolute -inset-0.5 bg-gradient-to-r from-primary via-blue-600 to-purple-600 rounded-xl blur opacity-30 group-hover:opacity-50 transition duration-500"></div>
+          <div className="absolute -inset-0.5 bg-gradient-to-r from-primary to-primary/80 rounded-xl blur opacity-30 group-hover:opacity-50 transition duration-500"></div>
           <Button
             type="submit"
             className="relative w-full font-bold h-14 md:h-12 text-base md:text-sm bg-gradient-to-r from-primary via-blue-600 to-purple-600 hover:from-primary/90 hover:via-blue-600/90 hover:to-purple-600/90 text-white border-0 rounded-xl shadow-xl hover:shadow-2xl transition-all duration-300 group"
@@ -8876,15 +10323,39 @@ function LandingPage() {
   const problemRef = React.useRef<HTMLDivElement>(null);
   const pricingRef = React.useRef<HTMLDivElement>(null);
   const demoRef = React.useRef<HTMLDivElement>(null);
+  const howItWorksRef = React.useRef<HTMLDivElement>(null);
+  const faqRef = React.useRef<HTMLDivElement>(null);
   const [showStickyCTA, setShowStickyCTA] = React.useState(false);
-
-  const handleLearnMoreClick = () => {
-    problemRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
+  const [waitlistOpen, setWaitlistOpen] = React.useState(false);
+  const [ctaLoading, setCtaLoading] = React.useState(false);
+  const [heroInView, setHeroInView] = React.useState(true);
+  const [footerInView, setFooterInView] = React.useState(false);
+  const footerRef = React.useRef<HTMLDivElement>(null);
+  // Waitlist form is shown in a modal; no inline form on hero
 
   const handleDemoClick = () => {
-    demoRef.current?.scrollIntoView({ behavior: "smooth" });
+    setCtaLoading(true);
+    // Open the waitlist drawer directly for a focused, frictionless CTA
+    setWaitlistOpen(true);
+    setTimeout(() => setCtaLoading(false), 400);
   };
+
+  const scrollToSection = (
+    ref: React.RefObject<HTMLDivElement>,
+    hash?: string,
+  ) => {
+    if (ref.current) {
+      ref.current.scrollIntoView({ behavior: "smooth", block: "start" });
+      if (hash) {
+        window.history.replaceState(null, "", hash);
+      }
+    }
+  };
+
+  const handlePricingClick = () => scrollToSection(pricingRef, "#pricing");
+  const handleHowItWorksClick = () =>
+    scrollToSection(howItWorksRef, "#how-it-works");
+  const handleFaqClick = () => scrollToSection(faqRef, "#faq");
 
   React.useEffect(() => {
     const el = demoRef.current;
@@ -8892,13 +10363,98 @@ function LandingPage() {
     const observer = new IntersectionObserver(
       (entries) => {
         const entry = entries[0]!;
-        setShowStickyCTA(!entry.isIntersecting);
+        setHeroInView(entry.isIntersecting);
       },
       { root: null, threshold: 0.2 },
     );
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
+
+  React.useEffect(() => {
+    const footerEl = footerRef.current;
+    if (!footerEl) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0]!;
+        setFooterInView(entry.isIntersecting);
+      },
+      { root: null, threshold: 0.01 },
+    );
+    observer.observe(footerEl);
+    return () => observer.disconnect();
+  }, []);
+
+  React.useEffect(() => {
+    const hash = window.location.hash;
+    const map: Record<string, React.RefObject<HTMLDivElement>> = {
+      "#pricing": pricingRef,
+      "#how-it-works": howItWorksRef,
+      "#faq": faqRef,
+      "#home": demoRef,
+    };
+    const target = map[hash as keyof typeof map];
+    if (target?.current) {
+      setTimeout(() => {
+        target.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 0);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    setShowStickyCTA(!heroInView && !footerInView && !waitlistOpen);
+  }, [heroInView, footerInView, waitlistOpen]);
+
+  React.useEffect(() => {
+    const pr =
+      typeof window !== "undefined" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (pr) return;
+    const id = window.setInterval(() => {
+      setDemoStep((s) => (s + 1) % 3);
+    }, 6000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const { toast } = useToast();
+  const [newsletterEmail, setNewsletterEmail] = React.useState("");
+  const [newsletterSubmitting, setNewsletterSubmitting] = React.useState(false);
+  const [newsletterSubmitted, setNewsletterSubmitted] = React.useState(false);
+  const [previewTab, setPreviewTab] = React.useState<
+    "engage" | "strategy" | "content" | "schedule"
+  >("engage");
+  const [persona, setPersona] = React.useState<"solo" | "agency" | "brand">(
+    "solo",
+  );
+  const [demoStep, setDemoStep] = React.useState(0);
+  const [showBenefits, setShowBenefits] = React.useState(false);
+
+  const handleNewsletterSubmit = async () => {
+    if (!newsletterEmail.trim()) {
+      toast({
+        title: "Enter your email",
+        description: "Subscribe to early access updates.",
+      });
+      return;
+    }
+    setNewsletterSubmitting(true);
+    try {
+      await apiClient.submitWaitlistEntry({
+        email: newsletterEmail,
+        usageDetails: "Newsletter signup",
+      });
+      setNewsletterSubmitted(true);
+      toast({ title: "You're subscribed!" });
+    } catch (error) {
+      toast({
+        title: "Subscription failed",
+        description: (error as Error)?.message ?? "Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setNewsletterSubmitting(false);
+    }
+  };
 
   const structuredData = {
     "@context": "https://schema.org",
@@ -8907,7 +10463,7 @@ function LandingPage() {
     applicationCategory: "SocialMedia",
     operatingSystem: "Web",
     description:
-      "SocialWave provides brands a real‑time content advantage. It captures authentic audience signals and transforms them into consistent, on‑brand content that gets smarter with every interaction.",
+      "SocialWave: Find your signal in the noise. A self-learning command center for social growth—engage, plan, create, schedule, and measure—with Brand Vibe ensuring every reply and post sounds exactly like you. One system. One voice. One source of truth.",
   };
 
   // No pricing plans - show pricing on request message instead
@@ -8955,10 +10511,10 @@ function LandingPage() {
     {
       value: "inbox",
       icon: MessageSquare,
-      title: "Unified Inbox",
-      heading: "Your Social Command Center",
+      title: "Engage Hub",
+      heading: "One inbox. No chaos.",
       description:
-        "Stop juggling tabs. SocialWave consolidates comments from all your connected platforms into one intelligent feed. Respond faster with AI-powered sentiment analysis and never miss an opportunity to engage.",
+        "All replies, mentions, and messages in one intelligent inbox with original thread context and sentiment built in. Suggested replies mirror your tone and intent.",
       points: [
         "View all comments across all platforms in one elegant interface.",
         "Filter by platform, status, or sentiment to focus on what matters.",
@@ -8968,23 +10524,23 @@ function LandingPage() {
     {
       value: "ai",
       icon: Sparkles,
-      title: "AI Co-Pilot",
-      heading: "Your Creative & Strategic Partner",
+      title: "Strategy Hub",
+      heading: "Stop chasing trends. Start setting them.",
       description:
-        "Our AI analyzes comments for sentiment and intent, suggesting on-brand replies in your unique voice. It learns from your style to become a true extension of your team.",
+        "Signals from your actual engagement data. Rising topics and opportunity clusters with competitive whitespace detection and recommended angles that match your voice.",
       points: [
-        "Receive multiple, context-aware response variations for any comment.",
-        "Automatically surface high-priority comments requiring urgent attention.",
-        "Define your brand voice, and the AI adapts to you.",
+        "Spot rising topics and clusters forming in your niche.",
+        "Find competitive whitespace and angles your brand can own.",
+        "Get recommended hooks, formats, and CTAs tailored to your voice.",
       ],
     },
     {
-      value: "strategy",
+      value: "content",
       icon: PieChart,
-      title: "Strategy Hub",
-      heading: "From Insight to Impact",
+      title: "Content Hub",
+      heading: "Creation without compromise.",
       description:
-        "Turn analytics into action. Generate viral thread ideas, discover trending insights, and receive a full 7-day content plan tailored to your brand and audience goals.",
+        "Idea to draft to approval in one place with platform-specific formatting, hooks, hashtags, and CTA variants — all tuned to your style.",
       points: [
         "Generate complete content calendars from your own social data.",
         "Create images, videos, and full posts with an integrated AI generator.",
@@ -8998,22 +10554,19 @@ function LandingPage() {
       step: 1,
       title: "Connect & Calibrate",
       description:
-        "Securely link your social accounts. Then, calibrate the AI by defining your unique brand voice, tone, and strategic goals.",
+        "Link your accounts and set Brand Vibe so everything sounds like you.",
     },
     {
       step: 2,
       title: "Discover & Create",
       description:
-        "Leverage Discover to uncover viral trends and generate a data-driven content calendar, complete with ready-to-post ideas.",
+        "Spot rising topics and turn them into ready‑to‑post drafts.",
     },
     {
       step: 3,
       title: "Engage & Scale",
       description: (
-        <span>
-          Respond faster, manage conversations effortlessly, and scale your
-          growth.
-        </span>
+        <span>Reply faster, schedule smarter, and learn what works.</span>
       ),
     },
   ];
@@ -9041,15 +10594,15 @@ function LandingPage() {
     },
   ];
   return (
-    <div className="min-h-screen w-full bg-background text-foreground flex flex-col items-center">
+    <div className="min-h-screen w-full bg-background text-foreground flex flex-col items-center overflow-x-hidden">
       <MetaTags
-        title="SocialWave — Real‑Time Content Advantage"
-        description="SocialWave captures audience signals in real time and turns them into consistent, on‑brand content. No prompts. No clutter. Output that learns from every interaction."
-        keywords="social media management, AI marketing, content scheduling, sentiment analysis, viral trends"
+        title="SocialWave — Find your signal in the noise."
+        description="SocialWave is a self-learning command center to engage, plan, create, schedule, and measure — with Brand Vibe ensuring every reply and post sounds exactly like you. One system. One voice. One source of truth."
+        keywords="social media OS, Brand Vibe, social media management, AI content, social analytics, scheduling"
       />
       <StructuredData data={structuredData} />
       {/* Header with Enhanced Glassmorphism */}
-      <header className="w-full px-5 md:px-8 py-4 flex justify-between items-center sticky top-0 bg-background/60 backdrop-blur-md z-30 border-b border-border/20">
+      <header className="w-full mx-auto max-w-7xl px-4 md:px-6 py-4 flex justify-between items-center sticky top-0 z-30 border-b border-border/10 nav-glass ring-aurora">
         <div className="flex items-center gap-3">
           <motion.div
             className="h-9 w-9 flex items-center justify-center bg-gradient-to-br from-primary to-primary/80 rounded-xl text-primary-foreground shadow-lg hover:shadow-xl transition-all duration-300"
@@ -9062,30 +10615,77 @@ function LandingPage() {
             SocialWave
           </span>
         </div>
+        <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-muted-foreground"></nav>
         <Button
           onClick={handleDemoClick}
-          className="h-12 md:h-10 px-6 rounded-xl font-medium hover:shadow-lg transition-all duration-300 text-base md:text-sm active:scale-95 bg-gradient-to-r from-primary to-primary/90 hover:from-primary/90 hover:to-primary/80 border border-primary/20"
+          disabled={ctaLoading}
+          aria-label="Join waitlist"
+          aria-expanded={waitlistOpen}
+          className="h-12 md:h-10 px-6 rounded-xl font-medium hover:shadow-lg transition-all duration-300 text-base md:text-sm active:scale-95 bg-gradient-to-r from-primary to-primary/90 hover:from-primary/90 hover:to-primary/80 border border-primary/20 button-shine focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-primary"
         >
-          <span className="flex items-center gap-2">
-            <span>Join Waitlist</span>
-            <ArrowRight className="h-4 w-4" />
-          </span>
+          {ctaLoading ? (
+            <span className="flex items-center gap-2">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span>Opening…</span>
+            </span>
+          ) : (
+            <span className="flex items-center gap-2">
+              <span>Join Waitlist</span>
+              <ArrowRight className="h-4 w-4" />
+            </span>
+          )}
         </Button>
       </header>
 
-      <main className="w-full">
+      <Drawer open={waitlistOpen} onOpenChange={setWaitlistOpen}>
+        <DrawerContent className="px-4 pb-6">
+          <DrawerHeader className="text-center">
+            <DrawerTitle className="text-2xl font-bold">
+              Get VIP Early Access
+            </DrawerTitle>
+            <DrawerDescription>
+              Be among the first to experience SocialWave.
+            </DrawerDescription>
+          </DrawerHeader>
+          <div className="px-2">
+            <WaitlistForm />
+          </div>
+          <DrawerFooter className="pt-2">
+            <DrawerClose asChild>
+              <Button variant="outline" className="w-full">
+                Close
+              </Button>
+            </DrawerClose>
+          </DrawerFooter>
+        </DrawerContent>
+      </Drawer>
+
+      <main className={`w-full ${showStickyCTA ? "pb-24" : ""}`}>
+        {" "}
         {/* Hero Section */}
-        <section className="text-center py-24 md:py-32 px-4 bg-background relative overflow-hidden">
-          {/* Background Elements with Enhanced Glassmorphism */}
-          <div className="absolute inset-0 -z-10">
-            <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-gradient-to-r from-primary/20 to-secondary/20 rounded-full blur-3xl animate-pulse" />
+        <section
+          id="home"
+          className="py-16 md:py-20 px-4 bg-background relative overflow-hidden md:text-left text-center"
+        >
+          {/* Animated aurora background */}
+          <div className="hidden md:block absolute inset-0 -z-10 pointer-events-none motion-reduce:hidden">
+            <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-gradient-to-r from-[hsl(var(--primary)/0.25)] to-[hsl(var(--accent)/0.25)] rounded-full blur-3xl animate-pulse" />
             <div
-              className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-gradient-to-l from-accent/20 to-primary/20 rounded-full blur-3xl animate-pulse"
-              style={{ animationDelay: "1s" }}
+              className="absolute bottom-1/4 right-1/4 w-[28rem] h-[28rem] bg-gradient-to-l from-[hsl(var(--accent)/0.25)] to-[hsl(var(--primary)/0.25)] rounded-full blur-3xl animate-pulse"
+              style={{ animationDelay: "1.2s" }}
+            />
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-80 h-80 bg-gradient-to-br from-transparent via-[hsl(var(--primary)/0.2)] to-transparent rounded-full blur-2xl animate-[pulse_6s_ease-in-out_infinite]" />
+          </div>
+          {/* Subtle floating orbs */}
+          <div className="hidden md:block absolute inset-0 -z-10 pointer-events-none motion-reduce:hidden">
+            <div className="orb-sway absolute top-10 left-6 w-24 h-24 rounded-full bg-[hsl(var(--primary)/0.15)] blur-2xl" />
+            <div
+              className="orb-sway absolute bottom-16 left-24 w-16 h-16 rounded-full bg-[hsl(var(--accent)/0.15)] blur-xl"
+              style={{ animationDuration: "9s" }}
             />
             <div
-              className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-72 h-72 bg-gradient-to-br from-secondary/10 to-primary/10 rounded-full blur-2xl animate-bounce"
-              style={{ animationDuration: "6s" }}
+              className="orb-sway absolute top-28 right-12 w-20 h-20 rounded-full bg-[hsl(var(--primary)/0.12)] blur-xl"
+              style={{ animationDuration: "11s" }}
             />
           </div>
 
@@ -9095,197 +10695,915 @@ function LandingPage() {
             transition={{ duration: 0.6 }}
             className="mb-8"
           >
-            <div className="inline-flex items-center gap-2 bg-gradient-to-r from-primary/10 to-secondary/10 backdrop-blur-sm text-primary px-6 py-3 rounded-full text-sm font-bold mb-8 border border-primary/30 shadow-lg">
+            <div className="hidden">
               <div className="w-2 h-2 bg-primary rounded-full animate-pulse" />
-              <span>⚡ Real‑Time Content Advantage</span>
-            </div>
+              <span>SocialWave: Find your signal in the noise.</span>
+            </div>{" "}
           </motion.div>
-          <motion.h1
-            initial={{ opacity: 0, y: 30 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.7, delay: 0.1 }}
-            className="text-5xl md:text-7xl lg:text-8xl font-bold mb-8 leading-[0.9] tracking-tight"
-          >
-            Turn Audience Signals Into{" "}
-            <span className="bg-gradient-to-r from-primary via-blue-600 to-purple-600 bg-clip-text text-transparent">
-              Consistent, On‑Brand Content{" "}
-            </span>
-          </motion.h1>
-          <motion.p
-            initial={{ opacity: 0, y: 30 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.7, delay: 0.3 }}
-            className="text-xl md:text-2xl text-muted-foreground mb-12 max-w-4xl leading-relaxed"
-          >
-            SocialWave captures authentic audience signals and turns them into
-            consistent, engaging content that sounds like you. No prompts. No
-            clutter. Output that learns from every interaction.
-          </motion.p>
-
-          {/* Waitlist Form */}
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, delay: 0.2 }}
-            ref={demoRef}
-            className="max-w-md mx-auto bg-background/60 border border-border/30 backdrop-blur-xl rounded-2xl p-4 shadow-lg"
-          >
-            <WaitlistForm />
-          </motion.div>
-
-          <motion.div
-            initial={{ opacity: 0, y: 30 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.7, delay: 0.4 }}
-            className="flex flex-col sm:flex-row justify-center items-center gap-6 mt-12"
-          >
-            {/* Primary CTA - Enhanced with urgency and premium design */}
-            <motion.div
-              whileHover={{ scale: 1.02, y: -2 }}
-              whileTap={{ scale: 0.98 }}
-              className="relative group w-full sm:w-auto"
-            >
-              <div className="absolute -inset-1 bg-gradient-to-r from-primary via-blue-600 to-purple-600 rounded-xl blur opacity-25 group-hover:opacity-40 transition duration-500"></div>
-              <Button
-                size="lg"
-                className="relative h-16 px-12 text-lg font-bold w-full sm:w-auto bg-gradient-to-r from-primary via-blue-600 to-purple-600 hover:from-primary/90 hover:via-blue-600/90 hover:to-purple-600/90 text-white shadow-xl hover:shadow-2xl transition-all duration-300 rounded-xl border-0 group-hover:shadow-primary/25"
-                onClick={handleDemoClick}
+          <div className="container mx-auto max-w-7xl md:grid md:grid-cols-2 md:gap-8 items-start">
+            <div>
+              <motion.h1
+                initial={{ opacity: 0, y: 30 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.7, delay: 0.1 }}
+                className="text-4xl md:text-6xl lg:text-7xl font-extrabold mb-8 leading-tight tracking-tight max-w-3xl md:max-w-2xl md:mx-0 mx-auto bg-gradient-to-b from-foreground via-foreground to-primary/70 bg-clip-text text-transparent"
               >
-                <div className="flex items-center gap-3">
+                On‑brand growth, minus the grind.{" "}
+              </motion.h1>
+              <motion.p
+                initial={{ opacity: 0, y: 30 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.7, delay: 0.3 }}
+                className="text-xl md:text-2xl text-muted-foreground mb-8 max-w-2xl md:mx-0 mx-auto leading-relaxed"
+              >
+                Your AI command center that writes, replies, and schedules in
+                your voice — automatically. No prompts. No tone drift.
+              </motion.p>
+              <div className="max-w-lg md:mx-0 mx-auto text-muted-foreground italic text-base md:text-lg mb-8">
+                One system. One voice. One source of truth.
+              </div>
+
+              {/* Waitlist Drawer Sentinel (kept for sticky CTA observer) */}
+              <div ref={demoRef} className="h-4" />
+
+              <motion.div
+                initial={{ opacity: 0, y: 30 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.7, delay: 0.4 }}
+                className="flex flex-col md:justify-start justify-center items-stretch gap-4 md:gap-6 mt-8"
+              >
+                <div className="flex flex-wrap items-center gap-2 md:gap-3 md:justify-start justify-center">
+                  {[
+                    { key: "solo", label: "Solo creator" },
+                    { key: "agency", label: "Agency" },
+                    { key: "brand", label: "Brand team" },
+                  ].map((p) => (
+                    <Button
+                      key={p.key}
+                      variant={
+                        persona === (p.key as any) ? "default" : "outline"
+                      }
+                      size="sm"
+                      aria-pressed={persona === (p.key as any)}
+                      className="rounded-full h-9 px-4 transition-colors duration-200"
+                      onClick={() =>
+                        setPersona(p.key as "solo" | "agency" | "brand")
+                      }
+                    >
+                      {p.label}
+                    </Button>
+                  ))}
                   <div className="relative">
-                    <Sparkles className="h-6 w-6 animate-pulse" />
-                    <div className="absolute -top-1 -right-1 w-3 h-3 bg-yellow-400 rounded-full animate-ping"></div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-9 px-3"
+                      onMouseEnter={() => setShowBenefits(true)}
+                      onMouseLeave={() => setShowBenefits(false)}
+                      onFocus={() => setShowBenefits(true)}
+                      onBlur={() => setShowBenefits(false)}
+                      onClick={() => setShowBenefits((v) => !v)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setShowBenefits((v) => !v);
+                        }
+                        if (e.key === "Escape") {
+                          setShowBenefits(false);
+                        }
+                      }}
+                      aria-expanded={showBenefits}
+                      aria-haspopup="dialog"
+                      aria-controls="benefits-flyout"
+                    >
+                      What you’ll get
+                    </Button>
+                    {showBenefits && (
+                      <div
+                        id="benefits-flyout"
+                        role="dialog"
+                        aria-modal="false"
+                        className="absolute z-20 mt-2 w-64 p-4 rounded-xl border bg-background shadow-lg"
+                      >
+                        <ul className="space-y-2 text-sm text-muted-foreground">
+                          {" "}
+                          {(persona === "solo"
+                            ? [
+                                "Save ~5h/week",
+                                "On‑brand replies",
+                                "Auto‑schedule wins",
+                              ]
+                            : persona === "agency"
+                              ? [
+                                  "Faster client approvals",
+                                  "Multi‑brand tone control",
+                                  "Bulk scheduling",
+                                ]
+                              : [
+                                  "Consistent brand voice",
+                                  "Cross‑team workflow",
+                                  "Insights that drive growth",
+                                ]
+                          ).map((item, i) => (
+                            <li key={i} className="flex items-start gap-2">
+                              <Check className="h-4 w-4 text-primary mt-0.5" />
+                              <span>{item}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                   </div>
-                  <span className="bg-gradient-to-r from-white to-yellow-100 bg-clip-text text-transparent font-extrabold">
-                    Join Waitlist
+                </div>
+
+                {/* Inline waitlist form removed to keep hero focused. Use the CTA to open the waitlist drawer. */}
+              </motion.div>
+
+              <div className="mt-6 flex md:justify-start justify-center gap-2 md:gap-4">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleHowItWorksClick}
+                  className="h-10 px-4"
+                >
+                  <span className="flex items-center gap-2">
+                    <span>How it works</span>
+                    <ArrowRight className="h-4 w-4" />
                   </span>
-                  <ArrowRight className="h-5 w-5 group-hover:translate-x-1 transition-transform duration-300" />
-                </div>
-                {/* Floating particles effect */}
-                <div className="absolute inset-0 overflow-hidden rounded-xl">
-                  <div
-                    className="absolute top-2 left-4 w-1 h-1 bg-white/60 rounded-full animate-bounce"
-                    style={{ animationDelay: "0s" }}
-                  ></div>
-                  <div
-                    className="absolute top-4 right-6 w-1 h-1 bg-white/40 rounded-full animate-bounce"
-                    style={{ animationDelay: "0.5s" }}
-                  ></div>
-                  <div
-                    className="absolute bottom-3 left-8 w-1 h-1 bg-white/50 rounded-full animate-bounce"
-                    style={{ animationDelay: "1s" }}
-                  ></div>
-                </div>
-              </Button>
-            </motion.div>
-
-            {/* Secondary CTA - Enhanced with better visual hierarchy */}
-            <motion.div
-              whileHover={{ scale: 1.02, y: -2 }}
-              whileTap={{ scale: 0.98 }}
-              className="relative group w-full sm:w-auto"
-            >
-              <Button
-                size="lg"
-                variant="outline"
-                className="relative h-16 px-12 text-lg font-bold w-full sm:w-auto border-2 border-primary/30 bg-background/80 backdrop-blur-sm hover:bg-primary/5 hover:border-primary/50 transition-all duration-300 rounded-xl shadow-lg hover:shadow-xl group-hover:shadow-primary/10"
-                onClick={handleLearnMoreClick}
-              >
-                <div className="flex items-center gap-3">
-                  <div className="p-1 bg-primary/10 rounded-full group-hover:bg-primary/20 transition-colors duration-300">
-                    <TrendingUp className="h-5 w-5 text-primary" />
-                  </div>
-                  <span className="bg-gradient-to-r from-foreground to-primary bg-clip-text text-transparent font-bold">
-                    Explore Features
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleFaqClick}
+                  className="h-10 px-4"
+                >
+                  <span className="flex items-center gap-2">
+                    <span>FAQ</span>
+                    <ArrowRight className="h-4 w-4" />
                   </span>
-                  <div className="w-2 h-2 bg-primary rounded-full opacity-60 group-hover:opacity-100 transition-opacity duration-300"></div>
-                </div>
-              </Button>
-            </motion.div>
-          </motion.div>
-
-          <motion.div
-            initial={{ opacity: 0, y: 30 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.7, delay: 0.6 }}
-            className="mt-16"
-          >
-            <p className="text-sm font-medium text-muted-foreground mb-8 text-center">
-              Seamlessly connects with all major platforms:
-            </p>
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-4 max-w-4xl mx-auto">
-              <motion.div
-                whileHover={{ y: -4, scale: 1.05 }}
-                transition={{ duration: 0.3 }}
-                className="group flex flex-col items-center gap-3 bg-gradient-to-br from-blue-50 to-blue-100 dark:from-blue-900/20 dark:to-blue-800/20 backdrop-blur-sm px-6 py-5 rounded-2xl border border-blue-200/50 dark:border-blue-800/30 hover:border-blue-300 dark:hover:border-blue-600 hover:shadow-lg hover:shadow-blue-500/10 transition-all duration-300"
-              >
-                <div className="p-3 bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl group-hover:scale-110 transition-transform duration-300 shadow-md">
-                  <Facebook className="h-6 w-6 text-white" />
-                </div>
-                <span className="text-sm font-semibold text-blue-700 dark:text-blue-300 group-hover:text-blue-800 dark:group-hover:text-blue-200 transition-colors">
-                  Facebook
-                </span>
-              </motion.div>
-
-              <motion.div
-                whileHover={{ y: -4, scale: 1.05 }}
-                transition={{ duration: 0.3, delay: 0.05 }}
-                className="group flex flex-col items-center gap-3 bg-gradient-to-br from-pink-50 to-purple-100 dark:from-pink-900/20 dark:to-purple-800/20 backdrop-blur-sm px-6 py-5 rounded-2xl border border-pink-200/50 dark:border-pink-800/30 hover:border-pink-300 dark:hover:border-pink-600 hover:shadow-lg hover:shadow-pink-500/10 transition-all duration-300"
-              >
-                <div className="p-3 bg-gradient-to-br from-pink-500 to-purple-600 rounded-xl group-hover:scale-110 transition-transform duration-300 shadow-md">
-                  <Instagram className="h-6 w-6 text-white" />
-                </div>
-                <span className="text-sm font-semibold text-pink-700 dark:text-pink-300 group-hover:text-pink-800 dark:group-hover:text-pink-200 transition-colors">
-                  Instagram
-                </span>
-              </motion.div>
-
-              <motion.div
-                whileHover={{ y: -4, scale: 1.05 }}
-                transition={{ duration: 0.3, delay: 0.1 }}
-                className="group flex flex-col items-center gap-3 bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-900/20 dark:to-slate-800/20 backdrop-blur-sm px-6 py-5 rounded-2xl border border-slate-200/50 dark:border-slate-800/30 hover:border-slate-300 dark:hover:border-slate-600 hover:shadow-lg hover:shadow-slate-500/10 transition-all duration-300"
-              >
-                <div className="p-3 bg-gradient-to-br from-slate-700 to-slate-900 rounded-xl group-hover:scale-110 transition-transform duration-300 shadow-md">
-                  <Twitter className="h-6 w-6 text-white" />
-                </div>
-                <span className="text-sm font-semibold text-slate-700 dark:text-slate-300 group-hover:text-slate-800 dark:group-hover:text-slate-200 transition-colors">
-                  Twitter/X
-                </span>
-              </motion.div>
-
-              <motion.div
-                whileHover={{ y: -4, scale: 1.05 }}
-                transition={{ duration: 0.3, delay: 0.15 }}
-                className="group flex flex-col items-center gap-3 bg-gradient-to-br from-red-50 to-red-100 dark:from-red-900/20 dark:to-red-800/20 backdrop-blur-sm px-6 py-5 rounded-2xl border border-red-200/50 dark:border-red-800/30 hover:border-red-300 dark:hover:border-red-600 hover:shadow-lg hover:shadow-red-500/10 transition-all duration-300"
-              >
-                <div className="p-3 bg-gradient-to-br from-red-500 to-red-600 rounded-xl group-hover:scale-110 transition-transform duration-300 shadow-md">
-                  <Youtube className="h-6 w-6 text-white" />
-                </div>
-                <span className="text-sm font-semibold text-red-700 dark:text-red-300 group-hover:text-red-800 dark:group-hover:text-red-200 transition-colors">
-                  YouTube
-                </span>
-              </motion.div>
-
-              <motion.div
-                whileHover={{ y: -4, scale: 1.05 }}
-                transition={{ duration: 0.3, delay: 0.2 }}
-                className="group flex flex-col items-center gap-3 bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-blue-900/20 dark:to-indigo-800/20 backdrop-blur-sm px-6 py-5 rounded-2xl border border-blue-200/50 dark:border-blue-800/30 hover:border-blue-300 dark:hover:border-blue-600 hover:shadow-lg hover:shadow-blue-500/10 transition-all duration-300 md:col-span-1 col-span-2 md:mx-0 mx-auto max-w-[200px]"
-              >
-                <div className="p-3 bg-gradient-to-br from-blue-600 to-blue-700 rounded-xl group-hover:scale-110 transition-transform duration-300 shadow-md">
-                  <Linkedin className="h-6 w-6 text-white" />
-                </div>
-                <span className="text-sm font-semibold text-blue-700 dark:text-blue-300 group-hover:text-blue-800 dark:group-hover:text-blue-200 transition-colors">
-                  LinkedIn
-                </span>
-              </motion.div>
+                </Button>
+              </div>
             </div>
-          </motion.div>
-        </section>
 
+            <div className="w-full md:justify-self-stretch mt-6 md:mt-0">
+              <div
+                className="relative rounded-3xl bg-background/80 border border-border shadow-2xl overflow-hidden transition-transform duration-200 hover:-translate-y-1 motion-reduce:transform-none motion-reduce:transition-none"
+                onClick={() => setDemoStep((s) => (s + 1) % 3)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    setDemoStep((s) => (s + 1) % 3);
+                  }
+                }}
+                aria-label="Play micro‑demo"
+              >
+                {" "}
+                <div
+                  className="absolute inset-0 pointer-events-none"
+                  style={{
+                    background:
+                      "radial-gradient(60% 40% at 20% 10%, hsl(var(--primary)/0.08) 0%, transparent 60%), radial-gradient(50% 30% at 80% 20%, hsl(var(--aquamarine-300)/0.08) 0%, transparent 60%)",
+                  }}
+                />
+                <div className="absolute top-3 left-3 z-10">
+                  <span className="px-2 py-1 text-xs rounded-full border bg-background/80">
+                    {persona === "solo"
+                      ? "Solo creator"
+                      : persona === "agency"
+                        ? "Agency"
+                        : "Brand team"}
+                  </span>
+                </div>
+                <div className="absolute bottom-3 right-3 z-10">
+                  <span className="px-2 py-1 text-xs rounded-full border bg-background/80">
+                    {demoStep === 0
+                      ? "Engage"
+                      : demoStep === 1
+                        ? "Create"
+                        : "Insights"}
+                  </span>
+                </div>
+                <div className="p-6 pt-12 pb-12 md:p-8 space-y-4 relative">
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant={demoStep === 0 ? "default" : "outline"}
+                      size="sm"
+                      className="h-8 rounded-full px-3"
+                      aria-pressed={demoStep === 0}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDemoStep(0);
+                      }}
+                    >
+                      <MessageSquare className="h-3.5 w-3.5 mr-1.5" /> Engage
+                    </Button>
+                    <Button
+                      variant={demoStep === 1 ? "default" : "outline"}
+                      size="sm"
+                      className="h-8 rounded-full px-3"
+                      aria-pressed={demoStep === 1}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDemoStep(1);
+                      }}
+                    >
+                      <Sparkles className="h-3.5 w-3.5 mr-1.5" /> Create
+                    </Button>
+                    <Button
+                      variant={demoStep === 2 ? "default" : "outline"}
+                      size="sm"
+                      className="h-8 rounded-full px-3"
+                      aria-pressed={demoStep === 2}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDemoStep(2);
+                      }}
+                    >
+                      <BarChart3 className="h-3.5 w-3.5 mr-1.5" /> Insights
+                    </Button>
+                  </div>
+
+                  {demoStep === 0 && (
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
+                      <div className="col-span-2 space-y-3">
+                        <div className="rounded-2xl p-4 border bg-background/80">
+                          <div className="flex items-start gap-3">
+                            <div className="h-8 w-8 rounded-full bg-primary/15" />
+                            <div className="flex-1">
+                              <div className="text-sm font-semibold">
+                                Alex • 2m
+                              </div>
+                              <div className="text-sm text-muted-foreground">
+                                Love this approach. How would you apply it to
+                                B2B?
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="rounded-2xl p-4 border bg-background/80">
+                          <div className="text-xs font-medium text-muted-foreground mb-2">
+                            Suggested reply
+                          </div>
+                          <div className="text-sm">
+                            Start by mapping buying committee pains → turn into
+                            social proof posts. Happy to share a template.
+                          </div>
+                          <div className="mt-3 flex gap-2">
+                            <Button size="sm" className="h-8 px-3 rounded-full">
+                              Act
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-8 px-3 rounded-full"
+                            >
+                              Skip
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="space-y-3">
+                        <div className="rounded-2xl p-4 border bg-background/80">
+                          <div className="text-xs font-semibold mb-2">
+                            Status
+                          </div>
+                          <div className="flex items-center gap-2 text-xs">
+                            <div className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
+                            Listening for mentions
+                          </div>
+                        </div>
+                        <div className="rounded-2xl p-4 border bg-background/80">
+                          <div className="text-xs font-semibold mb-2">
+                            Queue
+                          </div>
+                          <div className="h-2 w-full bg-primary/10 rounded" />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {demoStep === 1 && (
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
+                      <div className="col-span-2 rounded-2xl p-4 border bg-background/80">
+                        <div className="text-xs font-medium text-muted-foreground mb-2">
+                          Draft
+                        </div>
+                        <div className="space-y-2">
+                          <div className="h-3 w-4/5 bg-primary/10 rounded" />
+                          <div className="h-3 w-full bg-primary/10 rounded" />
+                          <div className="h-3 w-2/3 bg-primary/10 rounded" />
+                        </div>
+                        <div className="mt-3 flex gap-2">
+                          <Button size="sm" className="h-8 px-3 rounded-full">
+                            Generate
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-8 px-3 rounded-full"
+                          >
+                            Variants
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="space-y-3">
+                        <div className="rounded-2xl p-4 border bg-background/80">
+                          <div className="text-xs font-semibold mb-2">
+                            Format
+                          </div>
+                          <div className="flex flex-wrap gap-2 text-xs">
+                            <span className="px-2 py-1 rounded-full border">
+                              Thread
+                            </span>
+                            <span className="px-2 py-1 rounded-full border">
+                              Short
+                            </span>
+                            <span className="px-2 py-1 rounded-full border">
+                              Carousel
+                            </span>
+                          </div>
+                        </div>
+                        <div className="rounded-2xl p-4 border bg-background/80">
+                          <div className="text-xs font-semibold mb-2">
+                            Brand fit
+                          </div>
+                          <div className="h-2 w-3/4 bg-primary/20 rounded overflow-hidden">
+                            <div
+                              className="h-2 bg-primary"
+                              style={{ width: "68%" }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {demoStep === 2 && (
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
+                      <div className="col-span-2 rounded-2xl p-4 border bg-background/80">
+                        <div className="text-xs font-medium text-muted-foreground mb-3">
+                          Rising topics
+                        </div>
+                        <div className="space-y-3">
+                          {[
+                            "AI + Social Proof",
+                            "Short‑form Tutorials",
+                            "Founder Diaries",
+                          ].map((t, i) => (
+                            <div key={i} className="flex items-center gap-3">
+                              <div className="h-2 w-2 rounded-full bg-primary/50" />
+                              <div className="flex-1 text-sm">{t}</div>
+                              <div className="h-2 w-24 bg-primary/10 rounded overflow-hidden">
+                                <div
+                                  className="h-2 bg-primary"
+                                  style={{ width: `${60 + i * 10}%` }}
+                                />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="space-y-3">
+                        <div className="rounded-2xl p-4 border bg-background/80">
+                          <div className="text-xs font-semibold mb-2">
+                            Next best action
+                          </div>
+                          <div className="text-sm">
+                            Turn “Founder Diaries” into a 5‑post series.
+                          </div>
+                          <div className="mt-3">
+                            <Button size="sm" className="h-8 px-3 rounded-full">
+                              Use insight
+                            </Button>
+                          </div>
+                        </div>
+                        <div className="rounded-2xl p-4 border bg-background/80">
+                          <div className="text-xs font-semibold mb-2">
+                            Confidence
+                          </div>
+                          <div className="h-2 w-2/3 bg-primary/20 rounded overflow-hidden">
+                            <div
+                              className="h-2 bg-primary"
+                              style={{ width: "72%" }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <motion.div
+              initial={{ opacity: 0, y: 30 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.7, delay: 0.6 }}
+              className="mt-8"
+            >
+              <p className="text-sm font-medium text-muted-foreground mb-8 text-center">
+                Works with your go‑to platforms:
+              </p>
+              <div className="flex flex-wrap items-center justify-center gap-4 md:gap-6 max-w-3xl mx-auto">
+                <motion.div
+                  whileHover={{ y: -4, scale: 1.05 }}
+                  transition={{ duration: 0.3 }}
+                  className="group flex flex-col items-center gap-2 px-3 py-2 rounded-xl border border-border/60 bg-background/80 hover:border-primary/40 transition-all"
+                >
+                  <div className="p-2 rounded-lg bg-primary/10 group-hover:bg-primary/20 transition-colors">
+                    <Facebook className="h-6 w-6 text-white" />
+                  </div>
+                  <span className="text-sm font-medium text-muted-foreground group-hover:text-foreground transition-colors">
+                    Facebook
+                  </span>
+                </motion.div>
+
+                <motion.div
+                  whileHover={{ y: -4, scale: 1.05 }}
+                  transition={{ duration: 0.3, delay: 0.05 }}
+                  className="group flex flex-col items-center gap-2 px-3 py-2 rounded-xl border border-border/60 bg-background/80 hover:border-primary/40 transition-all"
+                >
+                  <div className="p-2 rounded-lg bg-primary/10 group-hover:bg-primary/20 transition-colors">
+                    <Instagram className="h-6 w-6 text-white" />
+                  </div>
+                  <span className="text-sm font-medium text-muted-foreground group-hover:text-foreground transition-colors">
+                    Instagram
+                  </span>
+                </motion.div>
+
+                <motion.div
+                  whileHover={{ y: -4, scale: 1.05 }}
+                  transition={{ duration: 0.3, delay: 0.1 }}
+                  className="group flex flex-col items-center gap-2 px-3 py-2 rounded-xl border border-border/60 bg-background/80 hover:border-primary/40 transition-all"
+                >
+                  <div className="p-2 rounded-lg bg-primary/10 group-hover:bg-primary/20 transition-colors">
+                    <Twitter className="h-6 w-6 text-white" />
+                  </div>
+                  <span className="text-sm font-medium text-muted-foreground group-hover:text-foreground transition-colors">
+                    Twitter/X
+                  </span>
+                </motion.div>
+
+                <motion.div
+                  whileHover={{ y: -4, scale: 1.05 }}
+                  transition={{ duration: 0.3, delay: 0.15 }}
+                  className="group flex flex-col items-center gap-2 px-3 py-2 rounded-xl border border-border/60 bg-background/80 hover:border-primary/40 transition-all"
+                >
+                  <div className="p-2 rounded-lg bg-primary/10 group-hover:bg-primary/20 transition-colors">
+                    <Youtube className="h-6 w-6 text-white" />
+                  </div>
+                  <span className="text-sm font-medium text-muted-foreground group-hover:text-foreground transition-colors">
+                    YouTube
+                  </span>
+                </motion.div>
+
+                <motion.div
+                  whileHover={{ y: -4, scale: 1.05 }}
+                  transition={{ duration: 0.3, delay: 0.2 }}
+                  className="group flex flex-col items-center gap-2 px-3 py-2 rounded-xl border border-border/60 bg-background/80 hover:border-primary/40 transition-all"
+                >
+                  <div className="p-2 rounded-lg bg-primary/10 group-hover:bg-primary/20 transition-colors">
+                    <Linkedin className="h-6 w-6 text-white" />
+                  </div>
+                  <span className="text-sm font-medium text-muted-foreground group-hover:text-foreground transition-colors">
+                    LinkedIn
+                  </span>
+                </motion.div>
+              </div>
+            </motion.div>
+          </div>
+        </section>
+        <section className="py-20 md:py-28 px-4 bg-background">
+          <div className="container mx-auto max-w-7xl">
+            <div className="text-center mb-8">
+              <h2 className="text-3xl md:text-5xl font-bold mb-3">
+                See it in action
+              </h2>
+              <p className="text-muted-foreground text-lg">
+                A quick peek at the core hubs—no videos, no iframes.
+              </p>
+            </div>
+
+            <div className="flex flex-col lg:flex-row gap-6">
+              <div className="w-full lg:w-1/3">
+                <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-1 gap-3">
+                  <Button
+                    variant={previewTab === "engage" ? "default" : "outline"}
+                    className="justify-start h-11"
+                    onClick={() => setPreviewTab("engage")}
+                  >
+                    <MessageSquare className="h-4 w-4 mr-2" /> Engage Hub
+                  </Button>
+                  <Button
+                    variant={previewTab === "strategy" ? "default" : "outline"}
+                    className="justify-start h-11"
+                    onClick={() => setPreviewTab("strategy")}
+                  >
+                    <Sparkles className="h-4 w-4 mr-2" /> Strategy Hub
+                  </Button>
+                  <Button
+                    variant={previewTab === "content" ? "default" : "outline"}
+                    className="justify-start h-11"
+                    onClick={() => setPreviewTab("content")}
+                  >
+                    <PieChart className="h-4 w-4 mr-2" /> Content Lab
+                  </Button>
+                  <Button
+                    variant={previewTab === "schedule" ? "default" : "outline"}
+                    className="justify-start h-11"
+                    onClick={() => setPreviewTab("schedule")}
+                  >
+                    <Calendar className="h-4 w-4 mr-2" /> Scheduler
+                  </Button>
+                </div>
+              </div>
+
+              <div className="w-full lg:w-2/3">
+                <div className="rounded-2xl glass-surface border border-border/60 p-4 md:p-6">
+                  {previewTab === "engage" && (
+                    <div>
+                      <h3 className="text-xl md:text-2xl font-bold mb-3">
+                        One inbox. No chaos.
+                      </h3>
+                      <p className="text-muted-foreground mb-4">
+                        All replies, mentions, and messages in one place with
+                        context and tone-matched suggestions.
+                      </p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {["Mentions", "DMs", "Comments", "Reviews"].map(
+                          (label, i) => (
+                            <div
+                              key={i}
+                              className="p-3 rounded-xl border bg-background/70"
+                            >
+                              <div className="text-sm font-semibold mb-1">
+                                {label}
+                              </div>
+                              <div className="h-2 w-24 bg-primary/20 rounded" />
+                            </div>
+                          ),
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {previewTab === "strategy" && (
+                    <div>
+                      <h3 className="text-xl md:text-2xl font-bold mb-3">
+                        Stop chasing. Start setting.
+                      </h3>
+                      <p className="text-muted-foreground mb-4">
+                        See rising topics and whitespace opportunities matched
+                        to your brand voice.
+                      </p>
+                      <div className="grid sm:grid-cols-3 gap-3">
+                        {["Rising Topics", "Angles", "Suggested Hooks"].map(
+                          (label, i) => (
+                            <div
+                              key={i}
+                              className="p-3 rounded-xl border bg-background/70"
+                            >
+                              <div className="text-sm font-semibold mb-1">
+                                {label}
+                              </div>
+                              <div className="space-y-2">
+                                <div className="h-2 w-full bg-primary/15 rounded" />
+                                <div className="h-2 w-3/4 bg-primary/15 rounded" />
+                                <div className="h-2 w-2/3 bg-primary/15 rounded" />
+                              </div>
+                            </div>
+                          ),
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {previewTab === "content" && (
+                    <div>
+                      <h3 className="text-xl md:text-2xl font-bold mb-3">
+                        Creation without compromise.
+                      </h3>
+                      <p className="text-muted-foreground mb-4">
+                        Ideas to drafts with platform-ready formatting, all
+                        tuned to your style.
+                      </p>
+                      <div className="grid sm:grid-cols-2 gap-3">
+                        <div className="p-3 rounded-xl border bg-background/70">
+                          <div className="text-sm font-semibold mb-1">
+                            Draft
+                          </div>
+                          <div className="h-20 bg-primary/10 rounded mb-2" />
+                          <div className="h-2 w-2/3 bg-primary/15 rounded" />
+                        </div>
+                        <div className="p-3 rounded-xl border bg-background/70">
+                          <div className="text-sm font-semibold mb-1">
+                            Variants
+                          </div>
+                          <div className="space-y-2">
+                            <div className="h-2 w-full bg-primary/15 rounded" />
+                            <div className="h-2 w-5/6 bg-primary/15 rounded" />
+                            <div className="h-2 w-3/4 bg-primary/15 rounded" />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {previewTab === "schedule" && (
+                    <div>
+                      <h3 className="text-xl md:text-2xl font-bold mb-3">
+                        Self‑optimizing scheduling.
+                      </h3>
+                      <p className="text-muted-foreground mb-4">
+                        Queue content to hit optimal windows aligned to your
+                        goals.
+                      </p>
+                      <div className="grid grid-cols-7 gap-2 text-xs">
+                        {["S", "M", "T", "W", "T", "F", "S"].map((d, i) => (
+                          <div
+                            key={i}
+                            className="p-3 rounded-lg border bg-background/70 text-center"
+                          >
+                            {d}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+        <section className="py-10 px-4">
+          <div className="container mx-auto max-w-7xl">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
+              {showcaseFeatures.slice(0, 3).map((feature) => (
+                <div
+                  key={feature.title}
+                  className="group glass-surface rounded-2xl p-6 border border-primary/10 hover:border-primary/30 transition-all hover:shadow-lg"
+                >
+                  <div className="flex items-center gap-3 mb-3">
+                    <div className="p-3 rounded-xl bg-primary/10 text-primary">
+                      <feature.icon className="h-6 w-6" />
+                    </div>
+                    <div className="font-semibold text-lg">{feature.title}</div>
+                  </div>
+                  <div className="text-sm text-muted-foreground mb-3">
+                    {feature.heading}
+                  </div>
+                  <ul className="space-y-2">
+                    {feature.points.slice(0, 3).map((pt, idx) => (
+                      <li key={idx} className="flex items-start gap-2">
+                        <div className="mt-1 h-1.5 w-1.5 rounded-full bg-primary/60" />
+                        <span className="text-sm leading-relaxed">{pt}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+        <section className="py-6 px-4 hidden">
+          <div className="container mx-auto max-w-5xl">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">
+              <div className="glass-surface rounded-xl p-4 border border-green-200/30">
+                <Shield className="h-5 w-5 text-green-600 mx-auto mb-1" />
+                <div className="text-sm font-semibold">Encryption</div>
+              </div>
+              <div className="glass-surface rounded-xl p-4 border border-green-200/30">
+                <Check className="h-5 w-5 text-green-600 mx-auto mb-1" />
+                <div className="text-sm font-semibold">GDPR Ready</div>
+              </div>
+              <div className="glass-surface rounded-xl p-4 border border-green-200/30">
+                <Clock className="h-5 w-5 text-green-600 mx-auto mb-1" />
+                <div className="text-sm font-semibold">High Uptime</div>
+              </div>
+            </div>
+          </div>
+        </section>
+        <div className="mt-16">
+          <div className="hidden">
+            <div className="logo-marquee-track">
+              <div className="px-4 py-2 rounded-xl border bg-background/70 text-foreground/70">
+                Nimbus
+              </div>
+              <div className="px-4 py-2 rounded-xl border bg-background/70 text-foreground/70">
+                Falcon
+              </div>
+              <div className="px-4 py-2 rounded-xl border bg-background/70 text-foreground/70">
+                Archetype
+              </div>
+              <div className="px-4 py-2 rounded-xl border bg-background/70 text-foreground/70">
+                Helix
+              </div>
+              <div className="px-4 py-2 rounded-xl border bg-background/70 text-foreground/70">
+                Orbit
+              </div>
+              <div className="px-4 py-2 rounded-xl border bg-background/70 text-foreground/70">
+                Pulse
+              </div>
+              <div className="px-4 py-2 rounded-xl border bg-background/70 text-foreground/70">
+                Vertex
+              </div>
+              <div className="px-4 py-2 rounded-xl border bg-background/70 text-foreground/70">
+                Summit
+              </div>
+              <div className="px-4 py-2 rounded-xl border bg-background/70 text-foreground/70">
+                Nimbus
+              </div>
+              <div className="px-4 py-2 rounded-xl border bg-background/70 text-foreground/70">
+                Falcon
+              </div>
+              <div className="px-4 py-2 rounded-xl border bg-background/70 text-foreground/70">
+                Archetype
+              </div>
+              <div className="px-4 py-2 rounded-xl border bg-background/70 text-foreground/70">
+                Helix
+              </div>
+            </div>
+          </div>
+        </div>
+        {/* High-conviction landing copy sections */}
+        <section className="py-16 md:py-24 px-4 bg-gradient-to-br from-background to-secondary/5 hidden">
+          <div className="container mx-auto max-w-7xl">
+            <div className="grid gap-12">
+              <div>
+                <h2 className="text-3xl md:text-5xl font-bold mb-4">
+                  The Problem
+                </h2>
+                <p className="text-lg md:text-xl text-muted-foreground mb-6">
+                  Modern social media is noise.
+                </p>
+                <div className="grid md:grid-cols-2 gap-3">
+                  {[
+                    "Comments are scattered. Replies are inconsistent.",
+                    "AI tools output generic fluff that doesn’t convert.",
+                    "Strategy lives in a doc. Execution lives in dashboards.",
+                    "You’re publishing content. But you’re not learning from it.",
+                    "Every week feels like starting from scratch.",
+                    "No shared memory. No voice consistency. No feedback loop.",
+                  ].map((text, i) => (
+                    <div
+                      key={i}
+                      className="flex items-start gap-3 p-4 bg-background/70 border border-border rounded-xl"
+                    >
+                      <span className="mt-1 h-2 w-2 rounded-full bg-destructive/80"></span>
+                      <span className="text-muted-foreground">{text}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-4 italic text-foreground">
+                  “You don’t need another tool. You need a system that thinks.”
+                </div>
+              </div>
+
+              <div>
+                <h2 className="text-3xl md:text-5xl font-bold mb-4">
+                  The Shift
+                </h2>
+                <div className="space-y-4 p-6 rounded-2xl border bg-gradient-to-br from-primary/5 to-secondary/10">
+                  <div className="text-xl md:text-2xl font-bold">
+                    SocialWave is the OS for social growth.
+                  </div>
+                  <div className="grid sm:grid-cols-2 gap-3">
+                    {[
+                      "Learns your brand and tone automatically",
+                      "Listens to your audience and surfaces signals",
+                      "Acts on insights — drafts, replies, schedules",
+                      "Improves every week with a living brand memory",
+                    ].map((text, i) => (
+                      <div key={i} className="flex items-start gap-2">
+                        <div className="p-1.5 bg-primary/15 rounded-full">
+                          <Check className="h-4 w-4 text-primary" />
+                        </div>
+                        <span className="text-muted-foreground">{text}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="text-sm italic text-foreground/80">
+                    Not another dashboard. A thinking system.
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <h2 className="text-3xl md:text-5xl font-bold mb-4">
+                  What You Get
+                </h2>
+                <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {[
+                    {
+                      title: "Engagement",
+                      desc: "All replies, mentions, and messages in one intelligent inbox",
+                    },
+                    {
+                      title: "Strategy",
+                      desc: "Insights and themes built from your own signals",
+                    },
+                    {
+                      title: "Content",
+                      desc: "Generation, tone-locking, formatting, and approvals in one flow",
+                    },
+                    {
+                      title: "Scheduling",
+                      desc: "Intelligent calendar tuned to timing, variants, and intent",
+                    },
+                    {
+                      title: "Analytics",
+                      desc: "Clear answers to “what worked” and “what’s next”",
+                    },
+                    {
+                      title: "Brand Vibe",
+                      desc: "Every output locked to your voice — no drift",
+                    },
+                  ].map((item, i) => (
+                    <div
+                      key={i}
+                      className="group bg-background/80 backdrop-blur-sm border border-primary/10 hover:border-primary/30 rounded-2xl p-5 transition-all hover:shadow-lg"
+                    >
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className="p-1.5 bg-primary/15 rounded-full">
+                          <Check className="h-4 w-4 text-primary" />
+                        </div>
+                        <div className="font-semibold">{item.title}</div>
+                      </div>
+                      <div className="text-muted-foreground">{item.desc}</div>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-4 font-medium">
+                  All of it powered by{" "}
+                  <span className="font-bold">Brand Vibe</span> — your living
+                  brand memory.
+                </div>
+              </div>
+
+              <div>
+                <h3 className="text-2xl md:text-4xl font-bold mb-2">
+                  Brand Vibe
+                </h3>
+                <p className="text-lg text-muted-foreground mb-4">
+                  Your voice, codified.
+                </p>
+                <p className="text-muted-foreground mb-4">
+                  No more rewrites. No more tone drift. No more brand decks no
+                  one reads.
+                </p>
+                <div className="grid md:grid-cols-2 gap-4">
+                  <div>
+                    <p className="font-semibold mb-2">Learns from your:</p>
+                    <ul className="space-y-1 text-muted-foreground">
+                      <li>• Website copy, social posts, internal docs</li>
+                      <li>• Customer interactions</li>
+                      <li>• Style guides and tone sliders</li>
+                      <li>• CTA structures and audience goals</li>
+                    </ul>
+                  </div>
+                  <div>
+                    <p className="font-semibold mb-2">Outcomes:</p>
+                    <ul className="space-y-1 text-muted-foreground">
+                      <li>• Instant brand fit scoring</li>
+                      <li>• One-click tone correction</li>
+                      <li>• Phrase guardrails for safety and consistency</li>
+                      <li>• Memory that improves every campaign</li>
+                    </ul>
+                  </div>
+                </div>
+                <div className="mt-4 italic text-foreground">
+                  Every touchpoint becomes recognizably you.
+                </div>
+              </div>
+            </div>
+
+            <div className="text-center mt-12 px-2">
+              {" "}
+              <div className="inline-flex flex-col sm:flex-row gap-4">
+                <Button
+                  size="lg"
+                  className="h-14 px-10 font-bold"
+                  onClick={handleDemoClick}
+                >
+                  Join the Waitlist
+                </Button>
+                <Button
+                  size="lg"
+                  variant="outline"
+                  className="h-14 px-10 font-bold"
+                  onClick={handlePricingClick}
+                >
+                  Request Pricing
+                </Button>
+              </div>
+            </div>
+          </div>
+        </section>
         {/* Enhanced Value Proposition Section */}
-        <section className="py-24 px-4 bg-gradient-to-br from-primary/5 via-background to-secondary/5 relative overflow-hidden">
+        <section className="hidden md:block py-24 px-4 bg-gradient-to-br from-primary/5 via-background to-secondary/5 relative overflow-hidden">
           {/* Background Elements */}
-          <div className="absolute inset-0 -z-10">
+          <div className="absolute inset-0 -z-10 motion-reduce:hidden">
             <div className="absolute top-1/4 left-1/4 w-72 h-72 bg-gradient-to-r from-primary/10 to-secondary/10 rounded-full blur-3xl animate-pulse" />
             <div
               className="absolute bottom-1/4 right-1/4 w-72 h-72 bg-gradient-to-l from-accent/10 to-primary/10 rounded-full blur-3xl animate-pulse"
@@ -9293,7 +11611,7 @@ function LandingPage() {
             />
           </div>
 
-          <div className="container mx-auto relative z-10">
+          <div className="container mx-auto max-w-7xl relative z-10">
             <motion.div
               initial={{ opacity: 0, y: 30 }}
               whileInView={{ opacity: 1, y: 0 }}
@@ -9301,7 +11619,7 @@ function LandingPage() {
               viewport={{ once: true }}
               className="text-center mb-20"
             >
-              <div className="inline-flex items-center gap-2 bg-gradient-to-r from-primary/20 to-secondary/20 backdrop-blur-sm text-primary px-6 py-3 rounded-full text-sm font-bold mb-8 border border-primary/30 shadow-lg">
+              <div className="inline-flex items-center gap-2 bg-primary/10 backdrop-blur-sm text-primary px-6 py-3 rounded-full text-sm font-bold mb-8 border border-primary/30 shadow-lg">
                 <div className="w-2 h-2 bg-primary rounded-full animate-pulse" />
                 <span>✨ Built for modern teams</span>
               </div>
@@ -9327,7 +11645,7 @@ function LandingPage() {
             </motion.div>
 
             {/* Core Value Propositions */}
-            <div className="grid md:grid-cols-3 gap-8 md:gap-12 mb-16">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 md:gap-12 mb-16">
               {/* Revenue Growth */}
               <motion.div
                 initial={{ opacity: 0, y: 20 }}
@@ -9465,20 +11783,17 @@ function LandingPage() {
               </div>
 
               {/* Bottom disclaimer */}
-              <div className="text-center mt-8">
-                <p className="text-xs text-muted-foreground">
-                  *Based on average results from many teams using SocialWave for
-                  several months
-                </p>
-              </div>
             </motion.div>
           </div>
         </section>
-
         {/* How it Works Section - Enhanced with Premium Animations */}
-        <section className="py-24 px-4 bg-gradient-to-br from-secondary/5 via-background to-primary/5 relative overflow-hidden">
+        <section
+          id="how-it-works"
+          ref={howItWorksRef}
+          className="py-24 px-4 bg-gradient-to-br from-secondary/5 via-background to-primary/5 relative overflow-hidden"
+        >
           {/* Background Elements */}
-          <div className="absolute inset-0 -z-10">
+          <div className="absolute inset-0 -z-10 motion-reduce:hidden">
             <div className="absolute top-1/4 left-1/4 w-64 h-64 bg-gradient-to-r from-primary/10 to-secondary/10 rounded-full blur-3xl animate-pulse" />
             <div
               className="absolute bottom-1/4 right-1/4 w-64 h-64 bg-gradient-to-l from-accent/10 to-primary/10 rounded-full blur-3xl animate-pulse"
@@ -9486,7 +11801,7 @@ function LandingPage() {
             />
           </div>
 
-          <div className="container mx-auto text-center relative z-10">
+          <div className="container mx-auto max-w-7xl text-center relative z-10">
             <motion.div
               initial={{ opacity: 0, y: 30 }}
               whileInView={{ opacity: 1, y: 0 }}
@@ -9494,17 +11809,11 @@ function LandingPage() {
               viewport={{ once: true }}
               className="mb-20"
             >
-              <div className="inline-flex items-center gap-2 bg-gradient-to-r from-primary/20 to-secondary/20 backdrop-blur-sm text-primary px-6 py-3 rounded-full text-sm font-bold mb-8 border border-primary/30 shadow-lg">
+              <div className="inline-flex items-center gap-2 bg-primary/10 backdrop-blur-sm text-primary px-6 py-3 rounded-full text-sm font-bold mb-8 border border-primary/30 shadow-lg">
                 <div className="w-2 h-2 bg-primary rounded-full animate-pulse" />
                 <span>🚀 Simple 3-Step Process</span>
               </div>
-              <h2 className="text-4xl md:text-6xl font-bold mb-6 leading-tight">
-                From Zero to
-                <br />
-                <span className="bg-gradient-to-r from-primary via-blue-600 to-purple-600 bg-clip-text text-transparent">
-                  Social Hero
-                </span>
-              </h2>
+
               <p className="text-xl md:text-2xl text-muted-foreground mb-8 max-w-3xl mx-auto leading-relaxed">
                 Our streamlined process gets you from insight to impact in
                 minutes, not months.
@@ -9535,11 +11844,11 @@ function LandingPage() {
                 </motion.svg>
               </div>
 
-              <div className="grid md:grid-cols-3 gap-12 relative">
+              <div className="flex gap-8 relative overflow-x-auto snap-x snap-mandatory px-1 md:gap-10">
                 {howItWorks.map((item, index) => (
                   <motion.div
                     key={item.step}
-                    className="relative z-10 text-center group"
+                    className="relative z-10 text-center group snap-center min-w-[85vw] md:min-w-[380px] lg:min-w-[420px]"
                     initial={{ opacity: 0, y: 40, scale: 0.8 }}
                     whileInView={{ opacity: 1, y: 0, scale: 1 }}
                     transition={{
@@ -9634,7 +11943,7 @@ function LandingPage() {
               >
                 <Button
                   size="lg"
-                  className="h-16 px-12 text-lg font-bold bg-gradient-to-r from-primary via-blue-600 to-purple-600 hover:from-primary/90 hover:via-blue-600/90 hover:to-purple-600/90 text-white shadow-xl hover:shadow-2xl transition-all duration-300 rounded-xl border-0 group"
+                  className="h-16 px-12 text-lg font-bold bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70 text-white shadow-xl hover:shadow-2xl transition-all duration-300 rounded-xl border-0 group button-glow-impact"
                   onClick={handleDemoClick}
                 >
                   <div className="flex items-center gap-3">
@@ -9647,11 +11956,10 @@ function LandingPage() {
             </motion.div>
           </div>
         </section>
-
         {/* Advanced Features Grid - Enhanced with Premium Animations */}
-        <section className="py-24 px-4 bg-gradient-to-br from-secondary/5 via-background to-accent/5 relative overflow-hidden">
+        <section className="hidden md:block py-24 px-4 bg-gradient-to-br from-secondary/5 via-background to-accent/5 relative overflow-hidden">
           {/* Background Elements */}
-          <div className="absolute inset-0 -z-10">
+          <div className="absolute inset-0 -z-10 motion-reduce:hidden">
             <div className="absolute top-1/3 left-1/3 w-80 h-80 bg-gradient-to-r from-primary/8 to-blue-500/8 rounded-full blur-3xl animate-pulse" />
             <div
               className="absolute bottom-1/3 right-1/3 w-80 h-80 bg-gradient-to-l from-purple-500/8 to-primary/8 rounded-full blur-3xl animate-pulse"
@@ -9659,7 +11967,7 @@ function LandingPage() {
             />
           </div>
 
-          <div className="container mx-auto relative z-10">
+          <div className="container mx-auto max-w-7xl relative z-10">
             <motion.div
               initial={{ opacity: 0, y: 30 }}
               whileInView={{ opacity: 1, y: 0 }}
@@ -9669,7 +11977,7 @@ function LandingPage() {
             >
               <div className="inline-flex items-center gap-2 bg-gradient-to-r from-primary/20 to-blue-500/20 backdrop-blur-sm text-primary px-6 py-3 rounded-full text-sm font-bold mb-8 border border-primary/30 shadow-lg">
                 <div className="w-2 h-2 bg-primary rounded-full animate-pulse" />
-                <span>🎨 Complete Feature Arsenal</span>
+                <span>🎨 Everything you need</span>
               </div>
               <h2 className="text-4xl md:text-6xl font-bold mb-6 leading-tight">
                 <span className="bg-gradient-to-r from-primary via-blue-600 to-purple-600 bg-clip-text text-transparent">
@@ -9805,6 +12113,7 @@ function LandingPage() {
                 <Button
                   size="lg"
                   variant="outline"
+                  onClick={handleDemoClick}
                   className="h-14 px-10 text-lg font-bold border-2 border-primary/30 bg-background/80 backdrop-blur-sm hover:bg-primary/5 hover:border-primary/50 transition-all duration-300 rounded-xl shadow-lg hover:shadow-xl group"
                 >
                   <div className="flex items-center gap-3">
@@ -9821,14 +12130,13 @@ function LandingPage() {
             </motion.div>
           </div>
         </section>
-
         {/* Features Showcase Section - Optimized */}
         <section
           ref={problemRef}
-          className="py-24 px-4 bg-gradient-to-br from-primary/5 via-background to-secondary/5 relative overflow-hidden"
+          className="hidden md:block py-24 px-4 bg-gradient-to-br from-primary/5 via-background to-secondary/5 relative overflow-hidden"
         >
           {/* Background Elements */}
-          <div className="absolute inset-0 -z-10">
+          <div className="absolute inset-0 -z-10 motion-reduce:hidden">
             <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-gradient-to-r from-primary/10 to-secondary/10 rounded-full blur-3xl animate-pulse" />
             <div
               className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-gradient-to-l from-accent/10 to-primary/10 rounded-full blur-3xl animate-pulse"
@@ -9836,7 +12144,7 @@ function LandingPage() {
             />
           </div>
 
-          <div className="container mx-auto relative z-10">
+          <div className="container mx-auto max-w-7xl relative z-10">
             {/* Enhanced Section Header */}
             <motion.div
               initial={{ opacity: 0, y: 30 }}
@@ -9845,7 +12153,7 @@ function LandingPage() {
               viewport={{ once: true }}
               className="text-center mb-20"
             >
-              <div className="inline-flex items-center gap-2 bg-gradient-to-r from-primary/20 to-secondary/20 backdrop-blur-sm text-primary px-6 py-3 rounded-full text-sm font-bold mb-8 border border-primary/30 shadow-lg">
+              <div className="inline-flex items-center gap-2 bg-primary/10 backdrop-blur-sm text-primary px-6 py-3 rounded-full text-sm font-bold mb-8 border border-primary/30 shadow-lg">
                 <div className="w-2 h-2 bg-primary rounded-full animate-pulse" />
                 <span>🚀 Core Platform Features</span>
               </div>
@@ -10114,7 +12422,8 @@ function LandingPage() {
                         >
                           <Button
                             size="lg"
-                            className="w-full md:w-auto h-14 px-8 text-lg font-bold bg-gradient-to-r from-primary via-blue-600 to-purple-600 hover:from-primary/90 hover:via-blue-600/90 hover:to-purple-600/90 text-white shadow-xl hover:shadow-2xl transition-all duration-300 rounded-xl border-0 group"
+                            onClick={handleDemoClick}
+                            className="w-full md:w-auto h-14 px-8 text-lg font-bold bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70 text-white shadow-xl hover:shadow-2xl transition-all duration-300 rounded-xl border-0 group"
                           >
                             <div className="flex items-center gap-3">
                               <Sparkles className="h-5 w-5 animate-pulse" />
@@ -10140,7 +12449,7 @@ function LandingPage() {
             >
               <div className="bg-gradient-to-r from-primary/10 via-secondary/10 to-accent/10 rounded-2xl p-8 md:p-12 border border-primary/20 backdrop-blur-sm">
                 <h3 className="text-3xl md:text-4xl font-bold mb-6">
-                  🎯 Complete Feature Arsenal
+                  🎯 Everything you need
                 </h3>
                 <p className="text-lg md:text-xl text-muted-foreground mb-8 max-w-4xl mx-auto leading-relaxed">
                   Every tool you need to dominate social media, all powered by
@@ -10186,10 +12495,97 @@ function LandingPage() {
             </motion.div>
           </div>
         </section>
+        {/* Testimonials removed per request */}
+        <section className="hidden">
+          <div className="container mx-auto max-w-7xl text-center">
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.6 }}
+              viewport={{ once: true }}
+              className="mb-14"
+            >
+              <div className="inline-flex items-center gap-1.5 bg-primary/10 text-primary px-3 py-1.5 rounded-full text-xs sm:text-sm font-semibold mb-3 border border-primary/20 backdrop-blur">
+                ❤️ Loved by early teams
+              </div>
+              <h2 className="text-4xl md:text-5xl font-bold mb-4">
+                What people are saying
+              </h2>
+              <p className="text-lg text-muted-foreground max-w-3xl mx-auto">
+                Real quotes from real beta users rolling out SocialWave across
+                their workflows.
+              </p>
+            </motion.div>
 
+            <div className="grid md:grid-cols-3 gap-6">
+              <motion.div
+                whileHover={{ y: -6, scale: 1.02 }}
+                className="glass-card-3d p-6 text-left"
+              >
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="h-10 w-10 rounded-full bg-primary/15 flex items-center justify-center">
+                    🌊
+                  </div>
+                  <div>
+                    <div className="font-semibold">Aisha K.</div>
+                    <div className="text-xs text-muted-foreground">
+                      Head of Social, B2B SaaS
+                    </div>
+                  </div>
+                </div>
+                <div className="testimonial-quote text-foreground/90">
+                  “Brand Vibe killed our rewrite loop. Replies sound like us on
+                  the first try.”
+                </div>
+              </motion.div>
+
+              <motion.div
+                whileHover={{ y: -6, scale: 1.02 }}
+                className="glass-card-3d p-6 text-left"
+              >
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="h-10 w-10 rounded-full bg-primary/15 flex items-center justify-center">
+                    🚀
+                  </div>
+                  <div>
+                    <div className="font-semibold">Marco D.</div>
+                    <div className="text-xs text-muted-foreground">
+                      Founder, DTC
+                    </div>
+                  </div>
+                </div>
+                <div className="testimonial-quote text-foreground/90">
+                  “Scheduling + learning analytics became our growth loop. Fewer
+                  tools, better results.”
+                </div>
+              </motion.div>
+
+              <motion.div
+                whileHover={{ y: -6, scale: 1.02 }}
+                className="glass-card-3d p-6 text-left"
+              >
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="h-10 w-10 rounded-full bg-primary/15 flex items-center justify-center">
+                    ✨
+                  </div>
+                  <div>
+                    <div className="font-semibold">Priya S.</div>
+                    <div className="text-xs text-muted-foreground">
+                      Agency Lead
+                    </div>
+                  </div>
+                </div>
+                <div className="testimonial-quote text-foreground/90">
+                  “Threads that learn changed our client retention. It just…
+                  works.”
+                </div>
+              </motion.div>
+            </div>
+          </div>
+        </section>
         {/* Target Audience Section */}
-        <section className="py-24 px-4 bg-gradient-to-b from-background to-secondary/5">
-          <div className="container mx-auto">
+        <section className="py-24 px-4 bg-gradient-to-b from-background to-secondary/5 hidden">
+          <div className="container mx-auto max-w-7xl">
             {/* Section Header */}
             <div className="text-center mb-16">
               <motion.div
@@ -10199,7 +12595,7 @@ function LandingPage() {
                 viewport={{ once: true }}
                 className="mb-6"
               >
-                <div className="inline-flex items-center gap-2 bg-primary/10 text-primary px-4 py-2 rounded-full text-sm font-semibold mb-4">
+                <div className="inline-flex items-center gap-1.5 bg-primary/10 text-primary px-3 py-1.5 rounded-full text-xs sm:text-sm font-semibold mb-3 border border-primary/20 backdrop-blur">
                   🎯 <span>Perfect For You</span>
                 </div>
               </motion.div>
@@ -10427,10 +12823,13 @@ function LandingPage() {
             </motion.div>
           </div>
         </section>
-
         {/* Pricing Section - Enhanced Mobile Layout */}
-        <section ref={pricingRef} className="py-20 px-4 bg-background">
-          <div className="container mx-auto">
+        <section
+          id="pricing"
+          ref={pricingRef}
+          className="py-20 px-4 bg-background"
+        >
+          <div className="container mx-auto max-w-7xl">
             {/* Value-Driven Header */}
             <div className="text-center mb-16">
               <motion.div
@@ -10440,7 +12839,7 @@ function LandingPage() {
                 viewport={{ once: true }}
                 className="mb-6"
               >
-                <div className="inline-flex items-center gap-2 bg-primary/10 text-primary px-4 py-2 rounded-full text-sm font-semibold mb-4">
+                <div className="inline-flex items-center gap-1.5 bg-primary/10 text-primary px-3 py-1.5 rounded-full text-xs sm:text-sm font-semibold mb-3 border border-primary/20 backdrop-blur">
                   💡 <span>Flexible, usage‑friendly pricing</span>
                 </div>
               </motion.div>
@@ -10460,8 +12859,8 @@ function LandingPage() {
                 viewport={{ once: true }}
                 className="text-lg md:text-xl text-muted-foreground max-w-3xl mx-auto mb-8"
               >
-                Choose the plan that fits your stage. Designed to save time and
-                support growth without complexity.
+                Tell us about your team and channels — we’ll share a simple plan
+                that scales with you.
               </motion.p>
 
               {/* Value Proposition - Mobile Optimized */}
@@ -10470,10 +12869,10 @@ function LandingPage() {
                 whileInView={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.5, delay: 0.3 }}
                 viewport={{ once: true }}
-                className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6 max-w-4xl mx-auto mb-8 p-4 md:p-6 bg-gradient-to-r from-green-50 to-blue-50 rounded-xl border border-green-200"
+                className="grid grid-cols-1 md:grid-cols-3 gap-3 md:gap-4 max-w-4xl mx-auto mb-8 p-3 md:p-4 bg-background/50 backdrop-blur rounded-xl border border-border/50"
               >
                 <div className="text-center">
-                  <div className="text-xl md:text-2xl font-bold text-blue-600 mb-2">
+                  <div className="text-sm md:text-base font-semibold text-blue-600/90 mb-1">
                     AI-Powered
                   </div>
                   <div className="text-sm text-muted-foreground">
@@ -10481,7 +12880,7 @@ function LandingPage() {
                   </div>
                 </div>
                 <div className="text-center">
-                  <div className="text-xl md:text-2xl font-bold text-green-600 mb-2">
+                  <div className="text-sm md:text-base font-semibold text-green-600/90 mb-1">
                     Time Saving
                   </div>
                   <div className="text-sm text-muted-foreground">
@@ -10489,7 +12888,7 @@ function LandingPage() {
                   </div>
                 </div>
                 <div className="text-center">
-                  <div className="text-xl md:text-2xl font-bold text-purple-600 mb-2">
+                  <div className="text-sm md:text-base font-semibold text-purple-600/90 mb-1">
                     Scalable
                   </div>
                   <div className="text-sm text-muted-foreground">
@@ -10524,16 +12923,16 @@ function LandingPage() {
             <div className="text-center">
               <div className="bg-gradient-to-r from-primary/10 to-secondary/10 rounded-2xl p-8 md:p-12 border border-primary/20 max-w-2xl mx-auto">
                 <h3 className="text-2xl md:text-3xl font-bold mb-6 text-primary">
-                  Pricing on Request
+                  Pricing is available on request
                 </h3>
                 <p className="text-base md:text-lg text-muted-foreground mb-8">
-                  Get a custom quote tailored to your business needs. Contact us
-                  to discuss pricing options that work for you.
+                  Get a tailored plan for your stage and stack. We’ll follow up
+                  with a simple, transparent quote.
                 </p>
                 <div className="flex flex-col sm:flex-row gap-4 justify-center">
                   <Button
                     size="lg"
-                    className="bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70 text-primary-foreground shadow-lg hover:shadow-xl border-2 border-primary/20"
+                    className="bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70 text-primary-foreground shadow-lg hover:shadow-xl border-2 border-primary/20 button-glow-impact"
                     asChild
                   >
                     <a
@@ -10541,22 +12940,16 @@ function LandingPage() {
                       target="_blank"
                       rel="noopener noreferrer"
                     >
-                      📞 Contact Sales
+                      Request Pricing
                     </a>
                   </Button>
                   <Button
                     variant="outline"
                     size="lg"
                     className="hover:bg-primary/10 hover:border-primary/50 transition-all duration-300"
-                    asChild
+                    onClick={handleDemoClick}
                   >
-                    <a
-                      href="https://calendly.com/varunkrishna08/30min?month=2025-08"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      💬 Get Custom Quote
-                    </a>
+                    Join the Waitlist
                   </Button>
                 </div>
               </div>
@@ -10571,7 +12964,7 @@ function LandingPage() {
               className="text-center mt-16"
             >
               {/* Security & Compliance */}
-              <div className="bg-gradient-to-r from-green-50 to-blue-50 rounded-xl p-6 md:p-8 mb-8 border border-green-200">
+              <div className="hidden">
                 <h3 className="text-xl md:text-2xl font-bold mb-4">
                   🛡️ Enterprise-Grade Security
                 </h3>
@@ -10681,9 +13074,22 @@ function LandingPage() {
             </motion.div>
           </div>
         </section>
-
+        {/* Waitlist Section (dedicated, not in hero) */}
+        <section id="waitlist" className="py-24 px-4 bg-background">
+          <div className="container mx-auto max-w-3xl text-center">
+            <h2 className="text-3xl md:text-5xl font-bold mb-4">
+              Get VIP Early Access
+            </h2>
+            <p className="text-muted-foreground mb-8 text-lg">
+              Join the list to be first to try SocialWave.
+            </p>
+            <div className="rounded-2xl border border-border bg-background/80 p-6 shadow-sm">
+              <WaitlistForm />
+            </div>
+          </div>
+        </section>
         {/* FAQ Section */}
-        <section className="py-20 px-4 bg-secondary/20">
+        <section id="faq" ref={faqRef} className="py-20 px-4 bg-secondary/20">
           <div className="container mx-auto max-w-3xl">
             <motion.h2
               initial={{ opacity: 0, y: 20 }}
@@ -10700,13 +13106,21 @@ function LandingPage() {
               transition={{ duration: 0.5, delay: 0.2 }}
               viewport={{ once: true }}
             >
-              <Accordion type="single" collapsible className="w-full">
-                {faqs.map((faq, index) => (
-                  <AccordionItem value={`item-${index}`} key={index}>
-                    <AccordionTrigger className="text-lg font-semibold text-left">
+              <Accordion
+                type="single"
+                collapsible
+                className="w-full glass-surface rounded-2xl p-2 md:p-4 border border-border/50 backdrop-blur"
+              >
+                {faqs.slice(0, 3).map((faq, index) => (
+                  <AccordionItem
+                    value={`item-${index}`}
+                    key={index}
+                    className="mb-2 overflow-hidden rounded-xl border border-border/50 bg-background/60 backdrop-blur-sm"
+                  >
+                    <AccordionTrigger className="px-4 py-3 text-base md:text-lg font-semibold text-left hover:text-primary transition-colors">
                       {faq.question}
                     </AccordionTrigger>
-                    <AccordionContent className="text-base text-muted-foreground">
+                    <AccordionContent className="px-4 pb-4 text-sm md:text-base text-muted-foreground">
                       {faq.answer}
                     </AccordionContent>
                   </AccordionItem>
@@ -10715,10 +13129,9 @@ function LandingPage() {
             </motion.div>
           </div>
         </section>
-
         {/* Final CTA Section */}
         <section className="py-20 px-4 bg-gradient-to-br from-primary/10 via-background to-secondary/10">
-          <div className="container mx-auto text-center">
+          <div className="container mx-auto max-w-7xl text-center">
             <motion.div
               initial={{ opacity: 0, scale: 0.9 }}
               whileInView={{ opacity: 1, scale: 1 }}
@@ -10727,15 +13140,34 @@ function LandingPage() {
               className="max-w-4xl mx-auto"
             >
               <h2 className="text-4xl md:text-5xl font-bold mb-6 gradient-text">
-                🎨 Your Content Lab Awaits
+                SocialWave: Find your signal in the noise.
               </h2>
               <p className="text-xl text-muted-foreground mb-8 max-w-2xl mx-auto">
-                Join the content creation revolution. Get early access to the
-                most focused AI content lab for marketers and brands and start
-                creating viral content today.
+                If your team is struggling to keep up with platforms, tools,
+                briefs, and brand consistency — it’s time to step into a system
+                that simplifies, aligns, and improves.
+                <br />
+                You don’t need another dashboard. You need clarity. Velocity.
+                Intelligence.
+                <br />
+                <strong>You need SocialWave.</strong>
               </p>
-              <div className="max-w-md mx-auto mb-8">
-                <WaitlistForm />
+              <div className="flex flex-col sm:flex-row justify-center gap-4 mb-8">
+                <Button
+                  size="lg"
+                  className="h-14 px-10 font-bold"
+                  onClick={handleDemoClick}
+                >
+                  Join the Waitlist
+                </Button>
+                <Button
+                  size="lg"
+                  variant="outline"
+                  className="h-14 px-10 font-bold"
+                  onClick={handlePricingClick}
+                >
+                  Request Pricing
+                </Button>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6 max-w-3xl mx-auto text-sm text-muted-foreground">
                 <div className="flex items-center justify-center gap-2">
@@ -10756,10 +13188,10 @@ function LandingPage() {
         </section>
         {showStickyCTA && (
           <div className="fixed bottom-0 left-0 right-0 z-40 md:hidden safe-area-bottom">
-            <div className="mx-4 mb-4 rounded-2xl border border-primary/30 bg-background/80 backdrop-blur-md shadow-xl">
+            <div className="mx-4 mb-4 rounded-2xl border border-border/60 bg-background/95 backdrop-blur shadow-lg">
               <Button
                 size="lg"
-                className="w-full h-14 text-lg font-bold bg-gradient-to-r from-primary via-blue-600 to-purple-600 hover:from-primary/90 hover:via-blue-600/90 hover:to-purple-600/90 text-white rounded-2xl"
+                className="w-full h-14 text-lg font-bold bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70 text-white rounded-2xl button-glow-impact"
                 onClick={handleDemoClick}
               >
                 <div className="flex items-center justify-center gap-2">
@@ -10774,8 +13206,11 @@ function LandingPage() {
       </main>
 
       {/* Enhanced Footer - Mobile-First Design */}
-      <footer className="bg-gradient-to-br from-muted/50 to-background border-t border-border">
-        <div className="container mx-auto px-4 py-12 md:py-16">
+      <footer
+        ref={footerRef}
+        className="bg-background border-t border-border/60"
+      >
+        <div className="container mx-auto max-w-7xl px-4 py-12 md:py-16">
           {/* Main Footer Content */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8 md:gap-12 mb-8 md:mb-12">
             {/* Brand Section - Mobile Optimized */}
@@ -10796,9 +13231,9 @@ function LandingPage() {
                   </h3>
                 </div>
                 <p className="text-sm md:text-base text-muted-foreground mb-6 max-w-md leading-relaxed">
-                  The world's most advanced AI-powered social media platform.
-                  Transform your social presence into measurable business growth
-                  with intelligent automation that works Always‑On.
+                  SocialWave is an AI‑assisted social media workspace that helps
+                  you engage, plan, create, schedule, and measure in one place —
+                  keeping your voice consistent while reducing busywork.
                 </p>
 
                 {/* Social Links - Mobile Enhanced */}
@@ -10948,30 +13383,45 @@ function LandingPage() {
             whileInView={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, delay: 0.3 }}
             viewport={{ once: true }}
-            className="bg-gradient-to-r from-primary/10 to-secondary/10 rounded-xl p-6 md:p-8 mb-8 md:mb-12 border border-primary/20"
+            className="bg-background/60 rounded-xl p-6 md:p-8 mb-8 md:mb-12 border border-border/60 backdrop-blur"
           >
             <div className="text-center max-w-2xl mx-auto">
               <h4 className="text-lg md:text-xl font-bold mb-3 text-foreground">
                 🚀 Get Exclusive Early Access
               </h4>
               <p className="text-sm md:text-base text-muted-foreground mb-6">
-                Get weekly insights, tips, and updates delivered to your inbox.
-                Join creators who trust our newsletter.
-              </p>
-              <div className="flex flex-col sm:flex-row gap-3 max-w-md mx-auto">
-                <Input
-                  type="email"
-                  placeholder="Enter your email"
-                  className="flex-1 bg-background border-border focus:border-primary"
-                  disabled
-                />
-                <Button
-                  className="bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70 text-primary-foreground shadow-lg"
-                  disabled
-                >
-                  Subscribe
-                </Button>
-              </div>
+                Get weekly insights, tips, and product updates delivered to your
+                inbox.
+              </p>{" "}
+              {newsletterSubmitted ? (
+                <div className="text-sm text-green-600 dark:text-green-400 font-medium">
+                  You’re subscribed! Check your inbox for updates.
+                </div>
+              ) : (
+                <div className="flex flex-col sm:flex-row gap-3 max-w-md mx-auto">
+                  <Input
+                    type="email"
+                    placeholder="Enter your email"
+                    value={newsletterEmail}
+                    onChange={(e) => setNewsletterEmail(e.target.value)}
+                    className="flex-1 bg-background border-border focus:border-primary"
+                  />
+                  <Button
+                    className="bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70 text-primary-foreground shadow-lg"
+                    onClick={handleNewsletterSubmit}
+                    disabled={newsletterSubmitting}
+                  >
+                    {newsletterSubmitting ? (
+                      <span className="flex items-center gap-2">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Subscribing...
+                      </span>
+                    ) : (
+                      "Subscribe"
+                    )}
+                  </Button>
+                </div>
+              )}
               <p className="text-xs text-muted-foreground mt-3">
                 Unsubscribe anytime. We respect your privacy.
               </p>
@@ -11014,15 +13464,15 @@ function LandingPage() {
 
               {/* Trust Indicators - Mobile Friendly */}
               <div className="flex items-center gap-3">
-                <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                <div className="hidden">
                   <Shield className="h-3 w-3 text-green-600" />
                   <span className="hidden sm:inline">Secure</span>
                 </div>
-                <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                <div className="hidden">
                   <Check className="h-3 w-3 text-green-600" />
                   <span className="hidden sm:inline">GDPR</span>
                 </div>
-                <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                <div className="hidden">
                   <Clock className="h-3 w-3 text-green-600" />
                   <span className="hidden sm:inline">High uptime</span>
                 </div>
@@ -11061,7 +13511,7 @@ function hasOAuthConnections(accounts: any[]) {
 }
 
 // Helper function to get filtered nav items based on connection type
-function getFilteredNavItems(accounts: any[]) {
+function getFilteredNavItems(accounts: any[], opts?: { brandSetup?: boolean }) {
   const allNavItems = [
     { href: "/", label: "Home", icon: LayoutDashboard },
     {
@@ -11082,21 +13532,31 @@ function getFilteredNavItems(accounts: any[]) {
   ];
 
   const hasOAuth = hasOAuthConnections(accounts);
+  const brandSetup = !!opts?.brandSetup;
 
-  return allNavItems.map((item) => ({
-    ...item,
-    disabled: item.requiresOAuth && !hasOAuth,
-    disabledMessage:
-      item.requiresOAuth && !hasOAuth
+  return allNavItems.map((item) => {
+    const requiresButAllowedByBrand = item.label === "Schedule" && brandSetup;
+
+    const isDisabled =
+      item.requiresOAuth && !hasOAuth && !requiresButAllowedByBrand;
+
+    return {
+      ...item,
+      disabled: isDisabled,
+      disabledMessage: isDisabled
         ? "Connect a social media account to access this feature"
         : undefined,
-  }));
+    };
+  });
 }
 
 function Sidebar({ user }: { user: any }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const { data: connectedAccounts = [] } = useConnectedAccounts();
-  const filteredNavItems = getFilteredNavItems(connectedAccounts);
+  const { isSetup: hasWebsiteSetup, hasAnalysis } = useBrandContext();
+  const filteredNavItems = getFilteredNavItems(connectedAccounts, {
+    brandSetup: !!(hasWebsiteSetup || hasAnalysis),
+  });
 
   return (
     <motion.aside
@@ -11209,7 +13669,10 @@ function Sidebar({ user }: { user: any }) {
 function MobileBottomNav() {
   const location = useLocation();
   const { data: connectedAccounts = [] } = useConnectedAccounts();
-  const filteredNavItems = getFilteredNavItems(connectedAccounts);
+  const { isSetup: hasWebsiteSetup, hasAnalysis } = useBrandContext();
+  const filteredNavItems = getFilteredNavItems(connectedAccounts, {
+    brandSetup: !!(hasWebsiteSetup || hasAnalysis),
+  });
 
   return (
     <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-background/95 backdrop-blur-xl border-t border-border/50 z-30 safe-area-bottom">
@@ -11964,6 +14427,7 @@ function useRippleChatLogic(isOpen: boolean) {
       staleTime: 30000, // 30 seconds
       refetchOnWindowFocus: false,
       refetchInterval: false,
+      keepPreviousData: true,
     },
   );
 
@@ -11976,6 +14440,7 @@ function useRippleChatLogic(isOpen: boolean) {
       staleTime: 10000, // 10 seconds
       refetchOnWindowFocus: false,
       refetchInterval: false,
+      keepPreviousData: true,
     },
   );
 
@@ -11985,6 +14450,14 @@ function useRippleChatLogic(isOpen: boolean) {
     currentStep: string;
     processing: boolean;
   } | null>(null);
+
+  // Typewriter streaming refs
+  const typewriterIntervalRef = useRef<any>(null);
+  const typewriterTargetRef = useRef<string>("");
+  const streamingIdRef = useRef<string>("");
+  // Short-term polling to fetch final AI message after streaming completes
+  const pollIntervalRef = useRef<any>(null);
+  const pollStopTimeoutRef = useRef<any>(null);
 
   const startConversationMutation = useMutation(
     apiClient.startRippleConversation,
@@ -11998,14 +14471,19 @@ function useRippleChatLogic(isOpen: boolean) {
 
   const sendMessageMutation = useRealtimeMutation(apiClient.sendRippleMessage, {
     onMutate: async (newMessage) => {
-      const optimisticMessage = {
-        id: Date.now().toString(),
-        content: newMessage.message,
-        role: "user" as const,
-        createdAt: new Date().toISOString(),
-      };
-      setMessages((prev) => [...prev, optimisticMessage]);
-      setInputMessage("");
+      const isAutoOpen =
+        typeof (newMessage as any)?.context === "string" &&
+        (newMessage as any).context.includes("auto_open");
+      if (!isAutoOpen) {
+        const optimisticMessage = {
+          id: Date.now().toString(),
+          content: newMessage.message,
+          role: "user" as const,
+          createdAt: new Date().toISOString(),
+        };
+        setMessages((prev) => [...prev, optimisticMessage]);
+        setInputMessage("");
+      }
       setIsLoading(true);
       setProgressInfo({
         status: "Starting...",
@@ -12016,13 +14494,9 @@ function useRippleChatLogic(isOpen: boolean) {
     },
     onSuccess: (data) => {
       const finalData = data as any;
-      if (finalData && finalData.taskId) {
-        toast({
-          title: "Analysis Complete",
-          description:
-            "Ripple has generated your response and queued comprehensive analysis.",
-        });
-      }
+      // Suppress the old 'Analysis Complete' popup to keep the flow distraction-free
+      // We rely on the streamed draft and the final message update instead.
+      void finalData;
     },
     onError: () => {
       setIsLoading(false);
@@ -12184,8 +14658,40 @@ function useRippleChatLogic(isOpen: boolean) {
           createdAt: msg.createdAt,
           metadata: msg.metadata ? JSON.parse(msg.metadata) : {},
         }))
-        .filter((m: any) => m.metadata?.type !== "immediate_response");
+        .filter((m: any) => {
+          if (m.metadata?.type === "immediate_response") return false;
+          const ctx =
+            typeof m.metadata?.context === "string" ? m.metadata.context : "";
+          if (
+            m.role === "user" &&
+            (ctx.includes("auto_open") ||
+              (typeof m.content === "string" &&
+                m.content.startsWith("You're Ripple")))
+          ) {
+            return false;
+          }
+          return true;
+        });
       setMessages(formattedMessages);
+
+      // If the comprehensive response has landed, stop polling and clear progress
+      const hasComprehensive = formattedMessages.some(
+        (m: any) =>
+          m.role === "assistant" &&
+          m.metadata?.type === "comprehensive_response",
+      );
+      if (hasComprehensive) {
+        if (pollIntervalRef.current) {
+          clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
+        }
+        if (pollStopTimeoutRef.current) {
+          clearTimeout(pollStopTimeoutRef.current);
+          pollStopTimeoutRef.current = null;
+        }
+        setProgressInfo(null);
+        setIsLoading(false);
+      }
     }
   }, [conversationData]);
 
@@ -12209,39 +14715,95 @@ function useRippleChatLogic(isOpen: boolean) {
           (data as any).partial.length > 0
         ) {
           const partialText = (data as any).partial as string;
+          const streamingId = `stream_${currentConversation || "draft"}`;
+          streamingIdRef.current = streamingId;
+          typewriterTargetRef.current = partialText;
+
+          // Ensure a streaming message exists. Initialize with what's already typed (or empty)
           setMessages((prev) => {
-            const hasStreaming = prev.some(
-              (m) => m.id === `stream_${currentConversation || "draft"}`,
-            );
-            if (!hasStreaming) {
+            const exists = prev.some((m) => m.id === streamingId);
+            if (!exists) {
               return [
                 ...prev,
                 {
-                  id: `stream_${currentConversation || "draft"}`,
-                  content: partialText,
+                  id: streamingId,
+                  content: "",
                   role: "assistant" as const,
                   createdAt: new Date().toISOString(),
                   metadata: { type: "streaming" },
                 },
               ];
             }
-            return prev.map((m) =>
-              m.id === `stream_${currentConversation || "draft"}`
-                ? { ...m, content: partialText }
-                : m,
-            );
+            return prev;
           });
+
+          // Start or continue the typewriter interval
+          if (!typewriterIntervalRef.current) {
+            typewriterIntervalRef.current = setInterval(() => {
+              setMessages((prev) => {
+                return prev.map((m) => {
+                  if (m.id !== streamingIdRef.current) return m;
+                  const target = typewriterTargetRef.current || "";
+                  const current = (m.content as string) || "";
+                  if (current.length >= target.length) {
+                    return m;
+                  }
+                  // Elegant quick typing: speed up on spaces/punctuation
+                  const nextChar = target.charAt(current.length) || " ";
+                  const nextChunkSize = /\s|[,.!?]/.test(nextChar) ? 2 : 1;
+                  const next = target.slice(
+                    0,
+                    Math.min(target.length, current.length + nextChunkSize),
+                  );
+                  return { ...m, content: next };
+                });
+              });
+            }, 14);
+          }
         }
 
         // Clear progress when processing is complete
         if (data.processing === false && data.status === "analysis_queued") {
+          // Stop typewriter when server signals end of streaming
+          if (typewriterIntervalRef.current) {
+            clearInterval(typewriterIntervalRef.current);
+            typewriterIntervalRef.current = null;
+          }
+
+          // Remove streaming bubble so the draft doesn't linger
+          setMessages((prev) =>
+            prev.filter((m) => !m.id?.toString().startsWith("stream_")),
+          );
+
           setIsLoading(false);
           setTimeout(() => {
             setProgressInfo(null);
           }, 800); // keep it brief
+
+          // Start short-term polling to pick up the final saved response
+          if (!pollIntervalRef.current && currentConversation) {
+            pollIntervalRef.current = setInterval(() => {
+              queryClient.invalidateQueries([
+                "ripple-conversation",
+                currentConversation,
+              ]);
+            }, 1500);
+            // Safety stop after 30s
+            pollStopTimeoutRef.current = setTimeout(() => {
+              if (pollIntervalRef.current) {
+                clearInterval(pollIntervalRef.current);
+                pollIntervalRef.current = null;
+              }
+            }, 30000);
+          }
         }
       } // Handle final response data (when message exists)
       else if ("message" in data && data.message) {
+        // Ensure any running typewriter is stopped before rendering final message
+        if (typewriterIntervalRef.current) {
+          clearInterval(typewriterIntervalRef.current);
+          typewriterIntervalRef.current = null;
+        }
         setProgressInfo(null);
         setIsLoading(false);
 
@@ -12276,6 +14838,24 @@ function useRippleChatLogic(isOpen: boolean) {
       }
     }
   }, [sendMessageMutation.data]);
+
+  // Cleanup timers on unmount
+  useEffect(() => {
+    return () => {
+      if (typewriterIntervalRef.current) {
+        clearInterval(typewriterIntervalRef.current);
+        typewriterIntervalRef.current = null;
+      }
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+      if (pollStopTimeoutRef.current) {
+        clearTimeout(pollStopTimeoutRef.current);
+        pollStopTimeoutRef.current = null;
+      }
+    };
+  }, []);
 
   const handleStartConversation = () => {
     startConversationMutation.mutate({ userMessage: "Hello!" });
@@ -12321,6 +14901,76 @@ function useRippleChatLogic(isOpen: boolean) {
 // Sticky Ripple Chat Component
 function StickyRippleChat() {
   const [isOpen, setIsOpen] = useState(false);
+  const location = useLocation();
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
+  const [touchStartY, setTouchStartY] = useState<number | null>(null);
+  const [dragY, setDragY] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  // Quick Brief state
+  const [briefOpen, setBriefOpen] = useState(false);
+  const [briefOutcome, setBriefOutcome] = useState<
+    "summary" | "ideas" | "calendar" | "replies"
+  >("summary");
+  const [briefTimeframe, setBriefTimeframe] = useState<
+    "today" | "this_week" | "last_7" | "last_30"
+  >("today");
+  const [briefDepth, setBriefDepth] = useState<"bite" | "standard" | "deep">(
+    "standard",
+  );
+
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 767px)");
+    const update = () => setIsMobile(mq.matches);
+    update();
+    if ((mq as any).addEventListener)
+      (mq as any).addEventListener("change", update);
+    else (mq as any).addListener(update);
+    return () => {
+      if ((mq as any).removeEventListener)
+        (mq as any).removeEventListener("change", update);
+      else (mq as any).removeListener(update);
+    };
+  }, []);
+
+  // Keep compact by default on all devices; allow manual expand via button
+  useEffect(() => {
+    if (!isOpen) setIsExpanded(false);
+  }, [isOpen]);
+
+  // Focus the composer automatically when opening
+  useEffect(() => {
+    if (!isOpen) return;
+    setTimeout(() => {
+      const el = document.querySelector(
+        'textarea[placeholder="Ask Ripple anything..."]',
+      ) as HTMLTextAreaElement | null;
+      el?.focus();
+    }, 60);
+  }, [isOpen]);
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (!isMobile) return;
+    const t = e.touches && e.touches.length > 0 ? e.touches[0] : null;
+    if (!t) return;
+    setTouchStartY(t.clientY);
+    setIsDragging(true);
+  };
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (!isMobile || touchStartY === null) return;
+    const t = e.touches && e.touches.length > 0 ? e.touches[0] : null;
+    if (!t) return;
+    const delta = t.clientY - touchStartY;
+    setDragY(Math.max(0, delta));
+  };
+  const handleTouchEnd = () => {
+    if (!isMobile) return;
+    if (dragY > 120) {
+      setIsOpen(false);
+    }
+    setDragY(0);
+    setIsDragging(false);
+  };
   const {
     currentConversation,
     setCurrentConversation,
@@ -12331,10 +14981,171 @@ function StickyRippleChat() {
     messagesEndRef,
     conversations,
     progressInfo,
+    startConversationMutation,
+    sendMessageMutation,
     handleStartConversation,
-    handleSendMessage,
-    handleKeyPress,
   } = useRippleChatLogic(isOpen);
+
+  // Brand voice mode: locked (strictly on-brand) or relaxed (creative)
+  const [voiceMode, setVoiceMode] = useState<"locked" | "relaxed">("locked");
+
+  // Fetch brand guidelines for Brand Card info
+  const { data: brandGuidelines } = useQuery(
+    queryKeys.brandGuidelines(),
+    () => apiClient.getBrandGuidelines(),
+    { staleTime: 10 * 60 * 1000 },
+  );
+
+  // Keep stable refs to avoid effect re-runs from changing mutation refs
+  const currentConversationRef = useRef<string | null>(currentConversation);
+  useEffect(() => {
+    currentConversationRef.current = currentConversation;
+  }, [currentConversation]);
+  const startMutateAsyncRef = useRef(startConversationMutation.mutateAsync);
+  useEffect(() => {
+    startMutateAsyncRef.current = startConversationMutation.mutateAsync;
+  }, [startConversationMutation.mutateAsync]);
+  const sendMutateRef = useRef(sendMessageMutation.mutate);
+  useEffect(() => {
+    sendMutateRef.current = sendMessageMutation.mutate;
+  }, [sendMessageMutation.mutate]);
+
+  // Quick one-tap helper to start a conversation (if needed) and send immediately
+  const oneTapSend = useCallback(
+    async (message: string) => {
+      try {
+        let convId = currentConversationRef.current;
+        if (!convId) {
+          const res = await startMutateAsyncRef.current({
+            userMessage: "Hello!",
+          });
+          convId = (res as any)?.id ?? null;
+          if (convId) setCurrentConversation(convId);
+        }
+        if (convId) {
+          const contextTag =
+            (voiceMode === "locked" ? "voice_locked" : "voice_relaxed") +
+            ";quick_action";
+          sendMutateRef.current({
+            conversationId: convId,
+            message,
+            context: contextTag,
+          });
+        } else {
+          setInputMessage(message);
+        }
+      } catch {
+        setInputMessage(message);
+      }
+    },
+    [voiceMode],
+  );
+
+  // Programmatic open with context from anywhere in the app
+  useEffect(() => {
+    const handler = async (evt: Event) => {
+      const e = evt as CustomEvent<{
+        message: string;
+        context?: any;
+        forceFullscreen?: boolean;
+        autoSend?: boolean;
+      }>;
+      if (!e.detail || !("message" in e.detail)) return;
+      setIsOpen(true);
+      const wantFullscreen =
+        e.detail?.forceFullscreen || e.detail?.context === "report";
+      if (wantFullscreen) setIsExpanded(true);
+
+      // Start a fresh conversation silently
+      const seed = "You're Ripple — auto_open seed. Initialize context only.";
+      let convId: string | null = null;
+      try {
+        const res = (await startMutateAsyncRef.current({
+          userMessage: seed,
+        })) as any;
+        convId = (res && res.id) || currentConversationRef.current || null;
+        if (convId) setCurrentConversation(convId);
+      } catch {
+        convId = currentConversationRef.current || null;
+      }
+
+      // Prefill the composer
+      setInputMessage(e.detail.message || "");
+
+      // Optionally auto-send immediately
+      if (e.detail.autoSend && (e.detail.message || "").trim() && convId) {
+        try {
+          sendMutateRef.current({
+            conversationId: convId,
+            message: (e.detail.message || "").trim(),
+            context: (e.detail.context as string) || "auto_open",
+          });
+        } catch {}
+      }
+    };
+
+    window.addEventListener("open-ripple", handler as EventListener);
+    return () =>
+      window.removeEventListener("open-ripple", handler as EventListener);
+  }, []);
+
+  // Keyboard shortcuts for desktop: Esc to close, Shift+F to toggle expand
+  useEffect(() => {
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (!isOpen) return;
+      const tag = (ev.target as HTMLElement)?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea") return;
+      if (ev.key === "Escape") setIsOpen(false);
+      if ((ev.key === "F" || ev.key === "f") && ev.shiftKey)
+        setIsExpanded((v) => !v);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isOpen]);
+
+  // Track whether user is near the bottom to decide auto-scroll behavior
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
+  const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
+  const [visibleCount, setVisibleCount] = useState<number>(60);
+  const loadMoreOlder = useCallback(
+    (increment = 60) => {
+      setVisibleCount((prev) => Math.min(messages.length, prev + increment));
+    },
+    [messages.length],
+  );
+
+  // Initialize auto-scroll sticking when chat opens
+  useEffect(() => {
+    if (isOpen) setShouldAutoScroll(true);
+  }, [isOpen]);
+
+  const handleMessagesScroll = useCallback(() => {
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    const bottomThreshold = 80;
+    const atBottom =
+      el.scrollTop + el.clientHeight >= el.scrollHeight - bottomThreshold;
+    setShouldAutoScroll(atBottom);
+    const topThreshold = 80;
+    if (el.scrollTop <= topThreshold && visibleCount < messages.length) {
+      const prevHeight = el.scrollHeight;
+      setVisibleCount((prev) => Math.min(messages.length, prev + 60));
+      queueMicrotask(() => {
+        if (!messagesContainerRef.current) return;
+        const newHeight = messagesContainerRef.current.scrollHeight;
+        messagesContainerRef.current.scrollTop =
+          newHeight - prevHeight + el.scrollTop;
+      });
+    }
+  }, [visibleCount, messages.length]);
+
+  // Auto-scroll to latest message only when user is near bottom
+  useEffect(() => {
+    if (!isOpen || !shouldAutoScroll) return;
+    try {
+      messagesEndRef?.current?.scrollIntoView({ behavior: "smooth" });
+    } catch {}
+  }, [isOpen, messages, progressInfo, shouldAutoScroll]);
 
   // Horizontal sticky bar when closed
   if (!isOpen) {
@@ -12347,7 +15158,60 @@ function StickyRippleChat() {
       >
         {" "}
         <Button
-          onClick={() => setIsOpen(true)}
+          onClick={async () => {
+            // Open the chat UI
+            setIsOpen(true);
+
+            // Start a fresh conversation silently so the user can just hit Send
+            try {
+              await startMutateAsyncRef.current({
+                userMessage:
+                  "You're Ripple — quick_open seed. Initialize context only.",
+              });
+            } catch {}
+
+            // Build an auto message based on where the user is
+            const path = location?.pathname || "/";
+            const section = path.includes("/discover")
+              ? "discover"
+              : path.includes("/engage")
+                ? "engage"
+                : path.includes("/scheduler")
+                  ? "scheduler"
+                  : path.includes("/settings")
+                    ? "settings"
+                    : path.includes("/analytics")
+                      ? "analytics"
+                      : "home";
+
+            const shortTitleMap: Record<string, string> = {
+              home: "Quick summary & next best actions",
+              discover:
+                "Turn what I’m seeing into on‑brand content ideas with ready‑to‑post examples",
+              engage: "Prioritize replies and suggest on-brand responses",
+              scheduler:
+                "Tighten my 7‑day schedule: best times, gaps to fill, and 3 draft posts",
+              settings: "Review my brand voice and suggest improvements",
+              analytics:
+                "Summarize performance and give 3 high‑impact actions with sample copy",
+            };
+
+            const short = shortTitleMap[section] || shortTitleMap.home;
+
+            const brandName = (brandGuidelines as any)?.brandName || "my brand";
+
+            const fullMessage = `You're Ripple. Act immediately.
+
+Context: I just clicked the Ripple button while viewing the ${section} section.
+Brand: ${brandName}
+Goal: ${short}
+
+Give me an on-brand, answer-first response now. Keep it concise and include 2–3 clear actions.`;
+            void fullMessage;
+
+            // Prefill the composer; do not auto-send to avoid slow load
+            setInputMessage("");
+          }}
           className="flex items-center gap-3 px-5 py-3 h-12 bg-white dark:bg-gray-900 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-200 shadow-lg hover:shadow-xl border border-gray-200 dark:border-gray-700 transition-all duration-200 hover:-translate-y-0.5 rounded-full backdrop-blur-sm"
         >
           <div className="flex items-center gap-2">
@@ -12365,27 +15229,168 @@ function StickyRippleChat() {
     <motion.div
       initial={{ opacity: 0, y: 20, scale: 0.95 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
-      className="fixed right-4 md:right-6 w-[90vw] max-w-96 h-[70vh] max-h-[600px] bg-card border border-border rounded-xl shadow-2xl z-50 flex flex-col overflow-hidden bottom-[calc(env(safe-area-inset-bottom,0px)+5rem)] md:bottom-6"
+      className={`fixed z-50 flex flex-col overflow-hidden bg-card border border-border shadow-2xl ${isExpanded ? "inset-0" : "right-4 md:right-0 bottom-[calc(env(safe-area-inset-bottom,0px)+5rem)] md:bottom-0 md:top-0 w-[92vw] max-w-[26rem] md:max-w-[min(42rem,40vw)] md:h-screen rounded-xl md:rounded-none md:border-l"}`}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+      style={{
+        height: isMobile ? "100dvh" : undefined,
+        transform: isMobile ? `translateY(${dragY}px)` : undefined,
+        transition:
+          isMobile && !isDragging ? "transform 200ms ease-out" : undefined,
+      }}
     >
       {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b bg-primary text-primary-foreground rounded-t-xl">
+      <div className="relative flex items-center justify-between pr-4 pb-4 pl-4 pt-[calc(env(safe-area-inset-top,0px)+1rem)] md:pt-4 border-b bg-primary text-primary-foreground rounded-t-xl">
         <div className="flex items-center gap-2">
           <div className="w-3 h-3 bg-green-400 rounded-full animate-pulse" />
           <h3 className="font-semibold">Ripple AI</h3>
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => setIsOpen(false)}
-          className="text-primary-foreground hover:bg-primary-foreground/20 h-8 w-8 p-0"
-        >
-          <X className="h-4 w-4" />
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setIsExpanded((v) => !v)}
+            className="text-primary-foreground hover:bg-primary-foreground/20 h-8 w-8 p-0"
+            aria-label={isExpanded ? "Restore panel" : "Expand to full screen"}
+          >
+            {isExpanded ? (
+              <Minimize2 className="h-4 w-4" />
+            ) : (
+              <Maximize2 className="h-4 w-4" />
+            )}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setIsOpen(false)}
+            className="text-primary-foreground hover:bg-primary-foreground/20 h-8 w-8 p-0"
+            aria-label="Close"
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
 
       {/* Conversation List or Messages */}
       {!currentConversation ? (
         <div className="flex-1 p-4 overflow-y-auto">
+          {/* Always-on Brand Card (visible even before a conversation starts) */}
+          <div className="px-4 py-2 border-b bg-card/60 backdrop-blur-sm flex items-center justify-between gap-3 rounded-md mb-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="text-xs text-muted-foreground truncate">
+                {brandGuidelines?.brandName
+                  ? `${brandGuidelines.brandName} voice`
+                  : "Brand voice"}
+              </span>
+              <span
+                className={`text-[10px] px-2 py-0.5 rounded-full border ${voiceMode === "locked" ? "bg-emerald-500/10 text-emerald-700 border-emerald-200 dark:text-emerald-300 dark:border-emerald-800" : "bg-amber-500/10 text-amber-700 border-amber-200 dark:text-amber-300 dark:border-amber-800"}`}
+              >
+                {voiceMode === "locked" ? "Locked" : "Relaxed"}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-muted-foreground hidden md:inline-block">
+                  {voiceMode === "locked"
+                    ? "Keep strictly on‑brand"
+                    : "Allow creative exploration"}
+                </span>
+                <Switch
+                  checked={voiceMode === "locked"}
+                  onCheckedChange={(v) =>
+                    setVoiceMode(v ? "locked" : "relaxed")
+                  }
+                />
+              </div>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7"
+                    aria-label="Brand info"
+                  >
+                    <Info className="h-4 w-4 text-muted-foreground" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-80 text-sm">
+                  <div className="space-y-2">
+                    <div className="font-medium text-foreground">
+                      Brand Vibe
+                    </div>
+                    {brandGuidelines ? (
+                      <div className="space-y-2 text-muted-foreground">
+                        {brandGuidelines.brandDescription && (
+                          <p className="line-clamp-3">
+                            {brandGuidelines.brandDescription}
+                          </p>
+                        )}
+                        <p>
+                          <span className="text-foreground font-medium">
+                            Voice:
+                          </span>{" "}
+                          {brandGuidelines.brandVoice || "—"}
+                        </p>
+                        {Array.isArray(
+                          (brandGuidelines as any).tonePriorities,
+                        ) && (
+                          <p>
+                            <span className="text-foreground font-medium">
+                              Tone:
+                            </span>{" "}
+                            {((brandGuidelines as any).tonePriorities || [])
+                              .slice(0, 5)
+                              .join(", ") || "—"}{" "}
+                          </p>
+                        )}
+                        {Array.isArray(
+                          (brandGuidelines as any).phrasesToUse,
+                        ) && (
+                          <p>
+                            <span className="text-foreground font-medium">
+                              Use:
+                            </span>{" "}
+                            {((brandGuidelines as any).phrasesToUse || [])
+                              .slice(0, 6)
+                              .join(", ") || "—"}{" "}
+                          </p>
+                        )}
+                        {Array.isArray(
+                          (brandGuidelines as any).phrasesToAvoid,
+                        ) && (
+                          <p>
+                            <span className="text-foreground font-medium">
+                              Avoid:
+                            </span>{" "}
+                            {((brandGuidelines as any).phrasesToAvoid || [])
+                              .slice(0, 6)
+                              .join(", ") || "—"}{" "}
+                          </p>
+                        )}
+                        {Array.isArray((brandGuidelines as any).directives) && (
+                          <p>
+                            <span className="text-foreground font-medium">
+                              Directives:
+                            </span>{" "}
+                            {((brandGuidelines as any).directives || [])
+                              .slice(0, 6)
+                              .join(", ") || "—"}{" "}
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="text-muted-foreground">
+                        No Brand Vibe yet. Add your guidelines in Settings and
+                        we'll build your full Brand Vibe (voice, personas,
+                        creative guardrails).
+                      </p>
+                    )}
+                  </div>
+                </PopoverContent>
+              </Popover>
+            </div>
+          </div>
           <div className="text-center mb-4">
             <div className="w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center mx-auto mb-3">
               <Bot className="h-6 w-6 text-primary" />
@@ -12407,17 +15412,22 @@ function StickyRippleChat() {
             {/* Direct Action Buttons */}
             <div className="space-y-3 mb-4">
               <p className="text-xs text-muted-foreground font-medium mb-3">
-                Quick Actions:
+                Suggested for you:
               </p>
               <div className="grid grid-cols-1 gap-2">
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={() => {
-                    setInputMessage(
-                      "What are the trending topics I should create content about?",
+                    void oneTapSend(
+                      "Scan " +
+                        (location?.pathname?.includes("/discover")
+                          ? "Discover"
+                          : "my feeds") +
+                        " and give me 3 on‑brand post ideas for " +
+                        ((brandGuidelines as any)?.brandName || "my brand") +
+                        " with hooks and CTAs.",
                     );
-                    handleStartConversation();
                   }}
                   className="text-left justify-start h-auto p-3 text-sm hover:bg-accent border-primary/20 hover:border-primary/40"
                 >
@@ -12439,10 +15449,11 @@ function StickyRippleChat() {
                   variant="outline"
                   size="sm"
                   onClick={() => {
-                    setInputMessage(
-                      "Generate a viral thread about my brand and recent trends",
+                    void oneTapSend(
+                      "Write a viral‑style thread for " +
+                        ((brandGuidelines as any)?.brandName || "my brand") +
+                        " using current trends. Include a title and 7–10 punchy bullets. Keep it on‑brand.",
                     );
-                    handleStartConversation();
                   }}
                   className="text-left justify-start h-auto p-3 text-sm hover:bg-accent border-primary/20 hover:border-primary/40"
                 >
@@ -12464,10 +15475,14 @@ function StickyRippleChat() {
                   variant="outline"
                   size="sm"
                   onClick={() => {
-                    setInputMessage(
-                      "Analyze my recent content performance and suggest improvements",
+                    void oneTapSend(
+                      (location?.pathname?.includes("/analytics")
+                        ? "From Analytics, "
+                        : "") +
+                        "What worked last week? Give " +
+                        ((brandGuidelines as any)?.brandName || "my brand") +
+                        " 3 improvements with example rewrites.",
                     );
-                    handleStartConversation();
                   }}
                   className="text-left justify-start h-auto p-3 text-sm hover:bg-accent border-primary/20 hover:border-primary/40"
                 >
@@ -12489,10 +15504,11 @@ function StickyRippleChat() {
                   variant="outline"
                   size="sm"
                   onClick={() => {
-                    setInputMessage(
-                      "Show me insights about my audience engagement patterns",
+                    void oneTapSend(
+                      "Who engages most and when for " +
+                        ((brandGuidelines as any)?.brandName || "my brand") +
+                        "? Give times, formats, and caption style.",
                     );
-                    handleStartConversation();
                   }}
                   className="text-left justify-start h-auto p-3 text-sm hover:bg-accent border-primary/20 hover:border-primary/40"
                 >
@@ -12547,17 +15563,805 @@ function StickyRippleChat() {
         </div>
       ) : (
         <>
-          {/* Messages */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-4">
-            {messages.map((message, index) => (
-              <div
-                key={message.id || index}
-                className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
+          {/* Brand Card */}
+          <div className="px-4 py-2 border-b bg-card/60 backdrop-blur-sm flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="text-xs text-muted-foreground truncate">
+                {brandGuidelines?.brandName
+                  ? `${brandGuidelines.brandName} voice`
+                  : "Brand voice"}
+              </span>
+              <span
+                className={`text-[10px] px-2 py-0.5 rounded-full border ${voiceMode === "locked" ? "bg-emerald-500/10 text-emerald-700 border-emerald-200 dark:text-emerald-300 dark:border-emerald-800" : "bg-amber-500/10 text-amber-700 border-amber-200 dark:text-amber-300 dark:border-amber-800"}`}
               >
-                <div
-                  className={`max-w-[85%] ${message.role === "user" ? "" : "space-y-2"}`}
+                {voiceMode === "locked" ? "Locked" : "Relaxed"}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-muted-foreground hidden md:inline-block">
+                  {voiceMode === "locked"
+                    ? "Keep strictly on‑brand"
+                    : "Allow creative exploration"}
+                </span>
+                <Switch
+                  checked={voiceMode === "locked"}
+                  onCheckedChange={(v) =>
+                    setVoiceMode(v ? "locked" : "relaxed")
+                  }
+                />
+              </div>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7"
+                    aria-label="Brand info"
+                  >
+                    <Info className="h-4 w-4 text-muted-foreground" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-80 text-sm">
+                  <div className="space-y-2">
+                    <div className="font-medium text-foreground">
+                      Brand Vibe
+                    </div>
+                    {brandGuidelines ? (
+                      <div className="space-y-2 text-muted-foreground">
+                        {brandGuidelines.brandDescription && (
+                          <p className="line-clamp-3">
+                            {brandGuidelines.brandDescription}
+                          </p>
+                        )}
+                        <p>
+                          <span className="text-foreground font-medium">
+                            Voice:
+                          </span>{" "}
+                          {brandGuidelines.brandVoice || "—"}
+                        </p>
+                        {Array.isArray(
+                          (brandGuidelines as any).tonePriorities,
+                        ) && (
+                          <p>
+                            <span className="text-foreground font-medium">
+                              Tone:
+                            </span>{" "}
+                            {((brandGuidelines as any).tonePriorities || [])
+                              .slice(0, 5)
+                              .join(", ") || "—"}{" "}
+                          </p>
+                        )}
+                        {Array.isArray(
+                          (brandGuidelines as any).phrasesToUse,
+                        ) && (
+                          <p>
+                            <span className="text-foreground font-medium">
+                              Use:
+                            </span>{" "}
+                            {((brandGuidelines as any).phrasesToUse || [])
+                              .slice(0, 6)
+                              .join(", ") || "—"}{" "}
+                          </p>
+                        )}
+                        {Array.isArray(
+                          (brandGuidelines as any).phrasesToAvoid,
+                        ) && (
+                          <p>
+                            <span className="text-foreground font-medium">
+                              Avoid:
+                            </span>{" "}
+                            {((brandGuidelines as any).phrasesToAvoid || [])
+                              .slice(0, 6)
+                              .join(", ") || "—"}{" "}
+                          </p>
+                        )}
+                        {Array.isArray((brandGuidelines as any).directives) && (
+                          <p>
+                            <span className="text-foreground font-medium">
+                              Directives:
+                            </span>{" "}
+                            {((brandGuidelines as any).directives || [])
+                              .slice(0, 6)
+                              .join(", ") || "—"}{" "}
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="text-muted-foreground">
+                        No Brand Vibe yet. Add your guidelines in Settings and
+                        we'll build your full Brand Vibe (voice, personas,
+                        creative guardrails).
+                      </p>
+                    )}
+                  </div>
+                </PopoverContent>
+              </Popover>
+            </div>
+          </div>
+
+          {/* Messages */}
+          <div
+            ref={messagesContainerRef}
+            onScroll={handleMessagesScroll}
+            className="flex-1 overflow-y-auto overscroll-contain p-4 space-y-4"
+          >
+            {visibleCount < messages.length && (
+              <div className="flex justify-center mb-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => loadMoreOlder()}
+                  className="h-7 px-3 text-xs"
                 >
-                  {message.role === "assistant" && (
+                  Load older messages
+                </Button>
+              </div>
+            )}
+            {messages
+              .slice(Math.max(0, messages.length - visibleCount))
+              .map((message, index) => (
+                <div
+                  key={message.id || index}
+                  className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
+                >
+                  <div
+                    className={`max-w-[85%] ${message.role === "user" ? "" : "space-y-2"}`}
+                  >
+                    {message.role === "assistant" && (
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className="w-5 h-5 bg-primary rounded-full flex items-center justify-center">
+                          <Bot className="h-3 w-3 text-primary-foreground" />
+                        </div>
+                        <span className="text-xs font-medium text-muted-foreground">
+                          Ripple AI
+                        </span>
+                        <span className="text-xs text-muted-foreground">
+                          {format(new Date(message.createdAt), "HH:mm")}
+                        </span>
+                      </div>
+                    )}
+
+                    <div
+                      className={`p-3 rounded-lg shadow-sm text-sm ${
+                        message.role === "user"
+                          ? "bg-primary text-primary-foreground rounded-br-none"
+                          : "bg-muted border rounded-tl-none"
+                      }`}
+                    >
+                      {message.role === "user" ? (
+                        <div>
+                          <p className="whitespace-pre-wrap leading-relaxed">
+                            {(message.content || "").replace(/\\n/g, "\n")}
+                          </p>
+                          <p className="text-xs opacity-70 mt-2 text-right">
+                            {format(new Date(message.createdAt), "HH:mm")}
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="prose prose-sm max-w-none">
+                          {(() => {
+                            const raw = (message.content || "").replace(
+                              /\\n/g,
+                              "\n",
+                            );
+                            const smartFormatText = (t: string) => {
+                              let s = t;
+                              // Ensure numbered items start on a new line (e.g., "1. ", "2. ")
+                              s = s.replace(/(\S)\s+(\d+)\.\s/g, "$1\n$2. ");
+                              // Add clear breaks before common section headers
+                              s = s.replace(
+                                /\s+(Hook|CTA|Summary|Takeaways?|Steps|Benefits|Key Points|Highlights)\s*:/gi,
+                                "\n\n$1:",
+                              );
+                              // Turn hyphen-separated points into list-like lines
+                              s = s.replace(/(\S)\s+-\s+/g, "$1\n- ");
+                              return s.trim();
+                            };
+                            const text = smartFormatText(raw);
+                            const extractVariations = (
+                              t: string,
+                            ):
+                              | Array<{
+                                  idx: number;
+                                  num: string;
+                                  title: string;
+                                }>
+                              | any[] => {
+                              const results = [];
+                              const re =
+                                /(?:^|\n)\s*(?:\*{0,3}\s*)?Variation\s*(\d+)\s*:\s*([^\n]*)/gi;
+                              const indices: Array<{
+                                idx: number;
+                                num: string;
+                                title: string;
+                              }> = [];
+                              let m;
+                              while ((m = re.exec(t))) {
+                                indices.push({
+                                  idx: m.index,
+                                  num: m[1],
+                                  title: (m[2] || "").trim(),
+                                });
+                              }
+                              indices.forEach((entry, i) => {
+                                const start = entry.idx;
+                                const end =
+                                  i + 1 < indices.length && indices[i + 1]
+                                    ? (indices[i + 1] as any).idx
+                                    : t.length;
+                                const block = t.slice(start, end);
+                                const hookMatch =
+                                  block.match(/Hook:\s*([^\n]+)/i);
+                                const ctaMatch =
+                                  block.match(/CTA:\s*([^\n]+)/i);
+                                const bullets = Array.from(
+                                  block.matchAll(
+                                    /(?:^|\n)\s*(?:\d+\.|[-•])\s*(.+)/g,
+                                  ),
+                                )
+                                  .map((b: any) =>
+                                    b && b[1] ? String(b[1]).trim() : "",
+                                  )
+                                  .filter((s: string) => !!s);
+                                const hashtags = Array.from(
+                                  block.matchAll(/(^|\s)(#[\w\d_]+)/g),
+                                )
+                                  .map((h: any) =>
+                                    h && h[2] ? String(h[2]) : "",
+                                  )
+                                  .filter((s: string) => !!s);
+                                (results as any).push({
+                                  id: `var-${entry.num}`,
+                                  title: entry.title,
+                                  hook: hookMatch?.[1]?.trim(),
+                                  bullets,
+                                  cta: ctaMatch?.[1]?.trim(),
+                                  hashtags,
+                                  raw: block.trim(),
+                                });
+                              });
+                              return results;
+                            };
+
+                            const extractEnhanced = (t) => {
+                              const has = t.includes(
+                                "Enhanced Analysis Results",
+                              );
+                              if (!has) return null;
+                              const getSection = (label) => {
+                                const reg = new RegExp(
+                                  `${label}:[\u0000-\uFFFF]*?(?:\n\n|$)`,
+                                  "i",
+                                );
+                                const mm = t.match(reg);
+                                if (!mm) return [];
+                                const body = mm[0].split(":")[1] || "";
+                                return body
+                                  .split(/\n|•/)
+                                  .map((s) => s.trim())
+                                  .filter((s) => s.length > 0);
+                              };
+                              return {
+                                opportunities: getSection("Opportunities"),
+                                predictions: getSection("Predictions"),
+                                suggestions: getSection("Smart Suggestions"),
+                              };
+                            };
+
+                            const variations = extractVariations(
+                              text,
+                            ) as Array<{
+                              id: string;
+                              title?: string;
+                              hook?: string;
+                              bullets: string[];
+                              cta?: string;
+                              hashtags?: string[];
+                              raw: string;
+                            }>;
+                            const enhanced = extractEnhanced(text);
+
+                            const extractContentIdeas = (t: string) => {
+                              const ideas: Array<{
+                                id: string;
+                                title: string;
+                                body: string;
+                                captions: {
+                                  linkedin?: string;
+                                  x?: string;
+                                  instagram?: string;
+                                };
+                              }> = [];
+                              const ideaRe =
+                                /(\n|^)\s*Content Idea\s*(\d+)\s*:\s*([^\n]+)([\s\S]*?)(?=(\n\s*Content Idea\s*\d+\s*:)|$)/gi;
+                              let m;
+                              while ((m = ideaRe.exec(t))) {
+                                const num = m[2];
+                                const title = (m[3] || "").trim();
+                                const block = (m[4] || "").trim();
+                                const captions: any = {};
+                                const norm = (s: string) =>
+                                  s.toLowerCase().includes("linkedin")
+                                    ? "linkedin"
+                                    : s.toLowerCase().includes("instagram") ||
+                                        s.toLowerCase().includes("ig")
+                                      ? "instagram"
+                                      : "x";
+                                // Pattern A: Ready-to-post caption (Platform):
+                                const capRe =
+                                  /Ready-to-post caption\s*\(([^)]+)\)\s*:\s*/gi;
+                                let capMatch;
+                                const positions: Array<{
+                                  idx: number;
+                                  plat: string;
+                                  len: number;
+                                }> = [];
+                                while ((capMatch = capRe.exec(block))) {
+                                  positions.push({
+                                    idx: capMatch.index,
+                                    plat: norm(capMatch[1] || ""),
+                                    len: capMatch[0].length,
+                                  });
+                                }
+                                if (positions.length > 0) {
+                                  positions.forEach((pos, i) => {
+                                    const start = pos.idx + pos.len;
+                                    const nextPos =
+                                      i + 1 < positions.length
+                                        ? positions[i + 1]
+                                        : undefined;
+                                    const end = nextPos
+                                      ? nextPos.idx
+                                      : block.length;
+                                    const content = block
+                                      .slice(start, end)
+                                      .trim();
+                                    if (content) captions[pos.plat] = content;
+                                  });
+                                }
+                                // Pattern B: Platform: ...
+                                const labelList = [
+                                  "LinkedIn",
+                                  "X",
+                                  "Twitter",
+                                  "Instagram",
+                                  "IG",
+                                ];
+                                labelList.forEach((label) => {
+                                  const re = new RegExp(
+                                    `(?:^|\\n)\\s*(?:[-*•]\\s*)?${label}(?:\\s*\\([^)]+\\))?\\s*:\\s*([\\s\\S]*?)(?=(?:\\n\\s*(?:[-*•]\\s*)?(LinkedIn|X|Twitter|Instagram|IG)(?:\\s*\\([^)]+\\))?\\s*:)|$)`,
+                                    "i",
+                                  );
+                                  const mm = block.match(re);
+                                  if (mm) {
+                                    const plat = norm(label);
+                                    if (!captions[plat])
+                                      captions[plat] = (mm[1] || "").trim();
+                                  }
+                                });
+                                ideas.push({
+                                  id: `idea-${num}`,
+                                  title,
+                                  body: block,
+                                  captions,
+                                });
+                              }
+                              return ideas;
+                            };
+
+                            const ideas = extractContentIdeas(text);
+
+                            const adaptForPlatform = (v, p) => {
+                              const base = [
+                                v.hook ? `${v.hook}` : v.title ? v.title : "",
+                                v.bullets.length
+                                  ? v.bullets
+                                      .map((b, i) => `${i + 1}. ${b}`)
+                                      .join("\n")
+                                  : "",
+                                v.cta ? `CTA: ${v.cta}` : "",
+                                v.hashtags && v.hashtags.length
+                                  ? v.hashtags.join(" ")
+                                  : "",
+                              ]
+                                .filter(Boolean)
+                                .join("\n\n");
+                              if (p === "linkedin") return base;
+                              if (p === "instagram") return base;
+                              const compact = [
+                                v.hook || v.title || "",
+                                v.bullets.slice(0, 3).join(" • "),
+                                v.cta || "",
+                              ]
+                                .filter(Boolean)
+                                .join(" — ");
+                              let out = compact;
+                              const limit = 275;
+                              if (out.length > limit)
+                                out = out.slice(0, limit - 1) + "…";
+                              const tags = (v.hashtags || [])
+                                .slice(0, 2)
+                                .join(" ");
+                              return tags ? `${out} ${tags}` : out;
+                            };
+
+                            if (variations.length === 0 && !enhanced) {
+                              return (
+                                <ReactMarkdown
+                                  remarkPlugins={[remarkGfm]}
+                                  components={{
+                                    p: ({ children }) => (
+                                      <p className="text-sm leading-relaxed mb-2 last:mb-0 text-foreground">
+                                        {children}
+                                      </p>
+                                    ),
+                                    ul: ({ children }) => (
+                                      <ul className="text-sm space-y-1 ml-4 mb-2 last:mb-0">
+                                        {children}
+                                      </ul>
+                                    ),
+                                    li: ({ children }) => (
+                                      <li className="flex items-start gap-2 text-foreground">
+                                        <span className="text-primary mt-1 font-bold text-xs">
+                                          •
+                                        </span>
+                                        <span className="flex-1 leading-relaxed">
+                                          {children}
+                                        </span>
+                                      </li>
+                                    ),
+                                  }}
+                                >
+                                  {text}
+                                </ReactMarkdown>
+                              );
+                            }
+
+                            return (
+                              <div className="space-y-3">
+                                {enhanced && (
+                                  <div className="p-3 bg-muted border rounded">
+                                    <div className="font-medium mb-2 flex items-center gap-2">
+                                      <TrendingUp className="h-4 w-4" />{" "}
+                                      Enhanced Analysis Results
+                                    </div>
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                      <div className="p-2 bg-background border rounded">
+                                        <div className="text-xs font-medium mb-1">
+                                          Opportunities
+                                        </div>
+                                        <ul className="text-xs space-y-1 list-disc ml-4">
+                                          {enhanced.opportunities.map(
+                                            (o, i) => (
+                                              <li key={i}>{o}</li>
+                                            ),
+                                          )}
+                                        </ul>
+                                      </div>
+                                      <div className="p-2 bg-background border rounded">
+                                        <div className="text-xs font-medium mb-1">
+                                          Predictions
+                                        </div>
+                                        <ul className="text-xs space-y-1 list-disc ml-4">
+                                          {enhanced.predictions.map((o, i) => (
+                                            <li key={i}>{o}</li>
+                                          ))}
+                                        </ul>
+                                      </div>
+                                      <div className="p-2 bg-background border rounded">
+                                        <div className="text-xs font-medium mb-1">
+                                          Smart Suggestions
+                                        </div>
+                                        <ul className="text-xs space-y-1 list-disc ml-4">
+                                          {enhanced.suggestions.map((o, i) => (
+                                            <li key={i}>{o}</li>
+                                          ))}
+                                        </ul>
+                                      </div>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {ideas.length > 0 && (
+                                  <div className="space-y-3">
+                                    {ideas.map((idea) => {
+                                      const hasAny = !!(
+                                        idea.captions.linkedin ||
+                                        idea.captions.x ||
+                                        idea.captions.instagram
+                                      );
+                                      return (
+                                        <div
+                                          key={idea.id}
+                                          className="p-3 bg-background border rounded"
+                                        >
+                                          <div className="flex items-start justify-between gap-2">
+                                            <div>
+                                              <div className="font-medium text-sm text-foreground">
+                                                {idea.title}
+                                              </div>
+                                              {(() => {
+                                                const m = (
+                                                  idea.body || ""
+                                                ).match(
+                                                  /(?:^|\n)\s*(?:[-*•]\s*)?Theme\s*:\s*([^\n]+)/i,
+                                                );
+                                                if (!m || !m[1]) return null;
+                                                const theme = String(
+                                                  m[1],
+                                                ).trim();
+                                                return (
+                                                  <p className="text-[11px] text-muted-foreground mt-0.5">
+                                                    Theme: {theme}
+                                                  </p>
+                                                );
+                                              })()}
+                                              {!hasAny && (
+                                                <p className="text-xs text-muted-foreground mt-1">
+                                                  No platform-specific captions
+                                                  detected.
+                                                </p>
+                                              )}
+                                            </div>
+                                            <div className="flex gap-1">
+                                              {idea.captions.linkedin && (
+                                                <Button
+                                                  size="sm"
+                                                  variant="outline"
+                                                  className="h-7 px-2 text-xs"
+                                                  onClick={() =>
+                                                    copy(
+                                                      idea.captions.linkedin!,
+                                                    )
+                                                  }
+                                                >
+                                                  <Linkedin className="h-3 w-3 mr-1" />{" "}
+                                                  Copy LinkedIn
+                                                </Button>
+                                              )}
+                                              {idea.captions.x && (
+                                                <Button
+                                                  size="sm"
+                                                  variant="outline"
+                                                  className="h-7 px-2 text-xs"
+                                                  onClick={() =>
+                                                    copy(idea.captions.x!)
+                                                  }
+                                                >
+                                                  <Twitter className="h-3 w-3 mr-1" />{" "}
+                                                  Copy X
+                                                </Button>
+                                              )}
+                                              {idea.captions.instagram && (
+                                                <Button
+                                                  size="sm"
+                                                  variant="outline"
+                                                  className="h-7 px-2 text-xs"
+                                                  onClick={() =>
+                                                    copy(
+                                                      idea.captions.instagram!,
+                                                    )
+                                                  }
+                                                >
+                                                  <Instagram className="h-3 w-3 mr-1" />{" "}
+                                                  Copy IG
+                                                </Button>
+                                              )}
+                                            </div>
+                                          </div>
+                                          {hasAny && (
+                                            <div className="mt-2 grid grid-cols-1 md:grid-cols-3 gap-2">
+                                              {idea.captions.linkedin && (
+                                                <div className="p-2 bg-muted/30 rounded border">
+                                                  <div className="text-xs font-medium mb-1">
+                                                    LinkedIn
+                                                  </div>
+                                                  <pre className="text-xs whitespace-pre-wrap leading-relaxed">
+                                                    {idea.captions.linkedin}
+                                                  </pre>
+                                                </div>
+                                              )}
+                                              {idea.captions.x && (
+                                                <div className="p-2 bg-muted/30 rounded border">
+                                                  <div className="text-xs font-medium mb-1">
+                                                    X
+                                                  </div>
+                                                  <pre className="text-xs whitespace-pre-wrap leading-relaxed">
+                                                    {idea.captions.x}
+                                                  </pre>
+                                                </div>
+                                              )}
+                                              {idea.captions.instagram && (
+                                                <div className="p-2 bg-muted/30 rounded border">
+                                                  <div className="text-xs font-medium mb-1">
+                                                    Instagram
+                                                  </div>
+                                                  <pre className="text-xs whitespace-pre-wrap leading-relaxed">
+                                                    {idea.captions.instagram}
+                                                  </pre>
+                                                </div>
+                                              )}
+                                            </div>
+                                          )}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+
+                                {variations.length > 0 && (
+                                  <div className="space-y-3">
+                                    {variations.map((v) => (
+                                      <div
+                                        key={v.id}
+                                        className="p-3 bg-background border rounded"
+                                      >
+                                        <div className="flex items-start justify-between gap-2">
+                                          <div>
+                                            <div className="font-medium text-sm text-foreground">
+                                              {v.title || v.hook || "Variation"}
+                                            </div>
+                                            {v.hook && (
+                                              <p className="text-xs text-muted-foreground mt-1">
+                                                {v.hook}
+                                              </p>
+                                            )}
+                                          </div>
+                                          <div className="flex gap-1">
+                                            <Button
+                                              size="sm"
+                                              variant="outline"
+                                              className="h-7 px-2 text-xs"
+                                              onClick={() =>
+                                                copy(
+                                                  adaptForPlatform(
+                                                    v,
+                                                    "linkedin",
+                                                  ),
+                                                )
+                                              }
+                                            >
+                                              <Linkedin className="h-3 w-3 mr-1" />{" "}
+                                              Copy LinkedIn
+                                            </Button>
+                                            <Button
+                                              size="sm"
+                                              variant="outline"
+                                              className="h-7 px-2 text-xs"
+                                              onClick={() =>
+                                                copy(adaptForPlatform(v, "x"))
+                                              }
+                                            >
+                                              <Twitter className="h-3 w-3 mr-1" />{" "}
+                                              Copy X
+                                            </Button>
+                                            <Button
+                                              size="sm"
+                                              variant="outline"
+                                              className="h-7 px-2 text-xs"
+                                              onClick={() =>
+                                                copy(
+                                                  adaptForPlatform(
+                                                    v,
+                                                    "instagram",
+                                                  ),
+                                                )
+                                              }
+                                            >
+                                              <Instagram className="h-3 w-3 mr-1" />{" "}
+                                              Copy IG
+                                            </Button>
+                                          </div>
+                                        </div>
+                                        {v.bullets.length > 0 && (
+                                          <ul className="mt-2 text-sm space-y-1 list-disc ml-5">
+                                            {v.bullets.map((b, i) => (
+                                              <li key={i}>{b}</li>
+                                            ))}
+                                          </ul>
+                                        )}
+                                        {v.cta && (
+                                          <div className="mt-2 text-sm">
+                                            <span className="font-medium">
+                                              CTA:
+                                            </span>{" "}
+                                            {v.cta}
+                                          </div>
+                                        )}
+                                        {v.hashtags &&
+                                          v.hashtags.length > 0 && (
+                                            <div className="mt-2 flex flex-wrap gap-1">
+                                              {v.hashtags
+                                                .slice(0, 6)
+                                                .map((h, i) => (
+                                                  <Badge
+                                                    key={i}
+                                                    variant="secondary"
+                                                    className="text-xs"
+                                                  >
+                                                    {h}
+                                                  </Badge>
+                                                ))}
+                                            </div>
+                                          )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })()}
+
+                          {message &&
+                            (message as any).metadata &&
+                            (message as any).metadata.brandWhy && (
+                              <div className="mt-2 p-2 rounded border bg-accent/30 text-xs text-muted-foreground">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <Info className="h-3 w-3 opacity-70" />
+                                  <span className="font-medium text-foreground">
+                                    Why this sounds on‑brand
+                                  </span>
+                                </div>
+                                <div className="prose prose-xs max-w-none">
+                                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                    {String(
+                                      (message as any).metadata.brandWhy || "",
+                                    )}
+                                  </ReactMarkdown>
+                                </div>
+                              </div>
+                            )}
+                          {message &&
+                            (message as any).metadata &&
+                            Array.isArray(
+                              (message as any).metadata.nextActions,
+                            ) &&
+                            (message as any).metadata.nextActions.length >
+                              0 && (
+                              <div className="mt-3">
+                                <div className="text-xs font-medium text-foreground mb-1">
+                                  Next steps
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                  {(message as any).metadata.nextActions
+                                    .slice(0, 3)
+                                    .map((a: any, i: number) => {
+                                      const label =
+                                        typeof a === "string"
+                                          ? a
+                                          : a.label || a.title || "Do this";
+                                      const prompt =
+                                        typeof a === "string"
+                                          ? a
+                                          : a.prompt || a.action || label;
+                                      return (
+                                        <Button
+                                          key={i}
+                                          size="sm"
+                                          variant="secondary"
+                                          className="h-7 px-2 text-xs"
+                                          onClick={() =>
+                                            void oneTapSend(prompt)
+                                          }
+                                        >
+                                          {label}
+                                        </Button>
+                                      );
+                                    })}
+                                </div>
+                              </div>
+                            )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            {(isLoading || progressInfo) &&
+              !messages.some((m) => m?.metadata?.type === "streaming") && (
+                <div className="flex justify-start">
+                  <div className="max-w-[85%] space-y-2">
                     <div className="flex items-center gap-2 mb-2">
                       <div className="w-5 h-5 bg-primary rounded-full flex items-center justify-center">
                         <Bot className="h-3 w-3 text-primary-foreground" />
@@ -12565,105 +16369,23 @@ function StickyRippleChat() {
                       <span className="text-xs font-medium text-muted-foreground">
                         Ripple AI
                       </span>
-                      <span className="text-xs text-muted-foreground">
-                        {format(new Date(message.createdAt), "HH:mm")}
-                      </span>
                     </div>
-                  )}
-
-                  <div
-                    className={`p-3 rounded-lg shadow-sm text-sm ${
-                      message.role === "user"
-                        ? "bg-primary text-primary-foreground rounded-br-none"
-                        : "bg-muted border rounded-tl-none"
-                    }`}
-                  >
-                    {message.role === "user" ? (
-                      <div>
-                        <p className="whitespace-pre-wrap leading-relaxed">
-                          {(message.content || "").replace(/\\n/g, "\n")}
-                        </p>
-                        <p className="text-xs opacity-70 mt-2 text-right">
-                          {format(new Date(message.createdAt), "HH:mm")}
-                        </p>
+                    <div className="bg-muted border p-3 rounded-lg rounded-tl-sm">
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 bg-primary rounded-full animate-bounce" />
+                        <div className="w-2 h-2 bg-primary/70 rounded-full animate-bounce [animation-delay:120ms]" />
+                        <div className="w-2 h-2 bg-primary/50 rounded-full animate-bounce [animation-delay:240ms]" />
+                        <span className="sr-only">Ripple is typing…</span>
                       </div>
-                    ) : (
-                      <div className="prose prose-sm max-w-none">
-                        <ReactMarkdown
-                          remarkPlugins={[remarkGfm]}
-                          components={{
-                            p: ({ children }) => (
-                              <p className="text-sm leading-relaxed mb-2 last:mb-0 text-foreground">
-                                {children}
-                              </p>
-                            ),
-                            ul: ({ children }) => (
-                              <ul className="text-sm space-y-1 ml-4 mb-2 last:mb-0">
-                                {children}
-                              </ul>
-                            ),
-                            li: ({ children }) => (
-                              <li className="flex items-start gap-2 text-foreground">
-                                <span className="text-primary mt-1 font-bold text-xs">
-                                  •
-                                </span>
-                                <span className="flex-1 leading-relaxed">
-                                  {children}
-                                </span>
-                              </li>
-                            ),
-                            strong: ({ children }) => (
-                              <strong className="font-semibold text-foreground">
-                                {children}
-                              </strong>
-                            ),
-                            code: ({ children }) => (
-                              <code className="bg-muted px-1 py-0.5 rounded text-xs font-mono">
-                                {children}
-                              </code>
-                            ),
-                            pre: ({ children }) => (
-                              <pre className="bg-muted p-2 rounded text-xs font-mono overflow-x-auto">
-                                {children}
-                              </pre>
-                            ),
-                          }}
-                        >
-                          {(message.content || "").replace(/\\n/g, "\n")}
-                        </ReactMarkdown>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ))}
-            {(isLoading || progressInfo) && (
-              <div className="flex justify-start">
-                <div className="max-w-[85%] space-y-2">
-                  <div className="flex items-center gap-2 mb-2">
-                    <div className="w-5 h-5 bg-primary rounded-full flex items-center justify-center">
-                      <Bot className="h-3 w-3 text-primary-foreground" />
-                    </div>
-                    <span className="text-xs font-medium text-muted-foreground">
-                      Ripple AI
-                    </span>
-                  </div>
-                  <div className="bg-muted border p-3 rounded-lg rounded-tl-sm">
-                    <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 bg-primary rounded-full animate-bounce" />
-                      <div className="w-2 h-2 bg-primary/70 rounded-full animate-bounce [animation-delay:120ms]" />
-                      <div className="w-2 h-2 bg-primary/50 rounded-full animate-bounce [animation-delay:240ms]" />
-                      <span className="sr-only">Ripple is typing…</span>
                     </div>
                   </div>
                 </div>
-              </div>
-            )}
+              )}
             <div ref={messagesEndRef} />
           </div>
 
           {/* Input */}
-          <div className="p-3 border-t bg-background">
+          <div className="p-3 pb-[calc(env(safe-area-inset-bottom,0px)+12px)] border-t bg-background">
             <div className="flex items-center gap-2">
               <Button
                 variant="ghost"
@@ -12674,16 +16396,230 @@ function StickyRippleChat() {
                 <ArrowLeft className="h-4 w-4" />
               </Button>
               <div className="flex-1 flex gap-2">
+                <Popover open={briefOpen} onOpenChange={setBriefOpen}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-9 px-3 hidden"
+                      aria-hidden="true"
+                      tabIndex={-1}
+                    >
+                      Brief
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-80" side="top" align="end">
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-3 gap-2">
+                        <div className="col-span-3">
+                          <Label className="text-xs">Outcome</Label>
+                          <Select
+                            value={briefOutcome}
+                            onValueChange={(v) => setBriefOutcome(v as any)}
+                          >
+                            <SelectTrigger className="h-8 text-xs mt-1">
+                              <SelectValue placeholder="Choose outcome" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="summary">Summary</SelectItem>
+                              <SelectItem value="ideas">Ideas</SelectItem>
+                              <SelectItem value="calendar">Calendar</SelectItem>
+                              <SelectItem value="replies">Replies</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div>
+                          <Label className="text-xs">Timeframe</Label>
+                          <Select
+                            value={briefTimeframe}
+                            onValueChange={(v) => setBriefTimeframe(v as any)}
+                          >
+                            <SelectTrigger className="h-8 text-xs mt-1">
+                              <SelectValue placeholder="When" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="today">Today</SelectItem>
+                              <SelectItem value="this_week">
+                                This week
+                              </SelectItem>
+                              <SelectItem value="last_7">
+                                Last 7 days
+                              </SelectItem>
+                              <SelectItem value="last_30">
+                                Last 30 days
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="col-span-2">
+                          <Label className="text-xs">Depth</Label>
+                          <Select
+                            value={briefDepth}
+                            onValueChange={(v) => setBriefDepth(v as any)}
+                          >
+                            <SelectTrigger className="h-8 text-xs mt-1">
+                              <SelectValue placeholder="How deep" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="bite">Bitesize</SelectItem>
+                              <SelectItem value="standard">Standard</SelectItem>
+                              <SelectItem value="deep">Deep dive</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-end gap-2">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setBriefOpen(false)}
+                        >
+                          Close
+                        </Button>
+                        <Button
+                          size="sm"
+                          className="bg-primary hover:bg-primary/90"
+                          disabled={isLoading}
+                          onClick={() => {
+                            const path = location?.pathname || "/";
+                            const section = path.includes("/discover")
+                              ? "discover"
+                              : path.includes("/engage")
+                                ? "engage"
+                                : path.includes("/scheduler")
+                                  ? "scheduler"
+                                  : path.includes("/settings")
+                                    ? "settings"
+                                    : path.includes("/analytics")
+                                      ? "analytics"
+                                      : "home";
+                            const brandName =
+                              (brandGuidelines as any)?.brandName || "my brand";
+                            const timeframeMap: Record<string, string> = {
+                              today: "today",
+                              this_week: "this week",
+                              last_7: "the last 7 days",
+                              last_30: "the last 30 days",
+                            };
+                            const outcomeMap: Record<string, string> = {
+                              summary: `Give me an on-brand, answer-first summary of what's most important`,
+                              ideas:
+                                "Give me 5 on-brand content ideas with hooks and CTAs",
+                              calendar:
+                                "Draft a 7-day posting plan with best times per platform",
+                              replies:
+                                "Prioritize replies and propose on-brand responses",
+                            };
+                            const depthMap: Record<string, string> = {
+                              bite: "Keep it tight: bullets only",
+                              standard: "Be concise with short examples",
+                              deep: "Include brief reasoning and examples",
+                            };
+                            const msg = `Quick brief — ${brandName}\n\nSection: ${section}. Timeframe: ${timeframeMap[briefTimeframe]}.\nOutcome: ${outcomeMap[briefOutcome]}. ${depthMap[briefDepth]}.\n\nStart with the answer. Then list 2–3 clear next actions.`;
+                            setBriefOpen(false);
+                            void oneTapSend(msg);
+                          }}
+                        >
+                          Run
+                        </Button>
+                      </div>
+                    </div>
+                  </PopoverContent>
+                </Popover>{" "}
                 <Textarea
                   value={inputMessage}
-                  onChange={(e) => setInputMessage(e.target.value)}
-                  onKeyPress={handleKeyPress}
+                  onChange={(e) => {
+                    setInputMessage(e.target.value);
+                  }}
+                  onInput={(e) => {
+                    const el = e.currentTarget as HTMLTextAreaElement;
+                    // Smooth auto-resize with internal scroll when max height is reached
+                    el.style.height = "auto";
+                    const maxPx = Math.round(
+                      isMobile
+                        ? window.innerHeight * 0.35
+                        : window.innerHeight * 0.28,
+                    );
+                    el.style.maxHeight = maxPx + "px";
+                    el.style.height = Math.min(el.scrollHeight, maxPx) + "px";
+                    el.style.overflowY =
+                      el.scrollHeight > maxPx ? "auto" : "hidden";
+                  }}
+                  onFocus={() => {
+                    // Keep composer anchored and latest messages visible when keyboard opens
+                    try {
+                      messagesEndRef?.current?.scrollIntoView({
+                        behavior: "smooth",
+                      });
+                    } catch {}
+                  }}
+                  onKeyDown={async (e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      if (!inputMessage.trim()) return;
+                      let convId =
+                        currentConversationRef.current || currentConversation;
+                      try {
+                        if (!convId) {
+                          const res = (await startMutateAsyncRef.current({
+                            userMessage:
+                              "You're Ripple — quick_send seed. Initialize context only.",
+                          })) as any;
+                          convId =
+                            (res && res.id) ||
+                            currentConversationRef.current ||
+                            currentConversation ||
+                            null;
+                          if (convId) setCurrentConversation(convId);
+                        }
+                        if (!convId) return;
+                        const contextTag =
+                          voiceMode === "locked"
+                            ? "voice_locked"
+                            : "voice_relaxed";
+                        sendMutateRef.current({
+                          conversationId: convId,
+                          message: inputMessage.trim(),
+                          context: contextTag,
+                        });
+                      } catch {}
+                    }
+                  }}
                   placeholder="Ask Ripple anything..."
-                  className="min-h-[36px] max-h-[72px] resize-none text-sm"
+                  className="min-h-[44px] md:min-h-[40px] resize-none overflow-y-auto text-[15px] md:text-sm leading-6"
                   rows={1}
+                  style={{ maxHeight: isMobile ? "35dvh" : "28dvh" }}
                 />
                 <Button
-                  onClick={handleSendMessage}
+                  onClick={async () => {
+                    if (!inputMessage.trim()) return;
+                    let convId =
+                      currentConversationRef.current || currentConversation;
+                    try {
+                      if (!convId) {
+                        const res = (await startMutateAsyncRef.current({
+                          userMessage:
+                            "You're Ripple — quick_send seed. Initialize context only.",
+                        })) as any;
+                        convId =
+                          (res && res.id) ||
+                          currentConversationRef.current ||
+                          currentConversation ||
+                          null;
+                        if (convId) setCurrentConversation(convId);
+                      }
+                      if (!convId) return;
+                      const contextTag =
+                        voiceMode === "locked"
+                          ? "voice_locked"
+                          : "voice_relaxed";
+                      sendMutateRef.current({
+                        conversationId: convId,
+                        message: inputMessage.trim(),
+                        context: contextTag,
+                      });
+                    } catch {}
+                  }}
                   disabled={!inputMessage.trim() || isLoading}
                   size="sm"
                   className="bg-primary hover:bg-primary/90 h-9 w-9 p-0"
@@ -14157,16 +18093,38 @@ function EngagePage() {
 
                 {/* 3. Content Intelligence */}
                 {commentAnalysis && (
-                  <Accordion type="single" collapsible className="w-full">
+                  <Accordion
+                    type="single"
+                    collapsible
+                    className="w-full glass-surface rounded-2xl p-2 md:p-4 border border-border/50 backdrop-blur"
+                  >
                     <AccordionItem value="item-1">
                       <AccordionTrigger>Content Intelligence</AccordionTrigger>
                       <AccordionContent>
                         <div className="border border-primary/20 rounded-lg p-3 bg-primary/5 space-y-2">
                           <div className="flex items-center justify-between">
-                            <h4 className="font-medium text-sm flex items-center">
-                              <Sparkles className="h-4 w-4 mr-1 text-primary" />
-                              AI Analysis
-                            </h4>
+                            <h4 className="font-medium text-sm flex items-center gap-2">
+                              <span className="flex items-center">
+                                <Sparkles className="h-4 w-4 mr-1 text-primary" />
+                                AI Analysis
+                              </span>
+                              <TooltipProvider>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <span className="inline-flex items-center justify-center w-4 h-4 rounded-full border text-[10px] cursor-default">
+                                      i
+                                    </span>
+                                  </TooltipTrigger>
+                                  <TooltipContent>
+                                    <p className="max-w-[260px] text-xs">
+                                      Suggested responses reflect your Brand
+                                      Guidelines and Brand Vibe for tone and
+                                      phrasing.
+                                    </p>
+                                  </TooltipContent>
+                                </Tooltip>
+                              </TooltipProvider>
+                            </h4>{" "}
                             <Badge
                               variant="outline"
                               className="bg-primary/10 text-primary border-primary/20"
@@ -14191,7 +18149,7 @@ function EngagePage() {
                                       <Button
                                         variant="outline"
                                         size="icon"
-                                        className="h-8 w-8"
+                                        className="h-10 w-10"
                                         onClick={() =>
                                           setResponseText(
                                             (prev) => prev + emojiSugg.emoji,
@@ -14537,6 +18495,7 @@ function EngagePage() {
 
 // OAuth Button components
 function TwitterOAuthButton() {
+  const auth = useAuth();
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
@@ -14608,55 +18567,35 @@ function TwitterOAuthButton() {
   const connectWithTwitter = async () => {
     setIsLoading(true);
     try {
-      const result = await apiClient.getTwitterOAuthUrl();
-
-      // Check if we got a missingCredentials response
-      if ("missingCredentials" in result) {
-        toast({
-          title: "Configuration Required",
-          description:
-            "Twitter API credentials are not configured. Please add them in the app settings.",
-          variant: "destructive",
-        });
-        setIsLoading(false);
-        return;
-      }
-
-      // Open OAuth window instead of direct navigation
-      const oauthWindow = window.open(
-        result.url,
-        "twitter-oauth",
-        "width=600,height=700,menubar=no,toolbar=no,location=no",
-      );
-
-      if (!oauthWindow) {
-        toast({
-          title: "Popup Blocked",
-          description:
-            "Please allow popups for this site to connect with Twitter",
-          variant: "destructive",
-        });
-        setIsLoading(false);
-        return;
-      }
-
-      // Show a toast to guide the user
-      toast({
-        title: "Twitter Authentication",
-        description:
-          "Please complete the authentication in the popup window. You'll be redirected back automatically.",
+      await auth.signIn({
+        provider: "TWITTER",
+        scope: ["tweet.read", "users.read", "tweet.write", "offline.access"],
       });
 
-      // Don't set isLoading to false here - it will be handled when the callback URL is processed
+      // Sync Adaptive OAuth connection into Connected Accounts, then refresh the list
+      try {
+        await apiClient.syncOAuthConnections();
+      } catch (e) {
+        // Non-fatal: still try to refresh list even if sync throws
+        console.error("syncOAuthConnections failed", e);
+      }
+      await apiClient.getConnectedAccounts();
+      await queryClient.invalidateQueries(queryKeys.connectedAccounts());
+
+      toast({
+        title: "Twitter connected",
+        description: "Your Twitter/X account is now connected.",
+      });
     } catch (error: any) {
       toast({
         title: "Connection failed",
         description:
           error instanceof Error
             ? error.message
-            : "Failed to initiate Twitter connection",
+            : "Failed to open the Twitter sign-in flow",
         variant: "destructive",
       });
+    } finally {
       setIsLoading(false);
     }
   };
@@ -14681,123 +18620,49 @@ function YouTubeOAuthButton() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
-  const navigate = useNavigate();
-  const location = useLocation();
+  const auth = useAuth();
 
-  // Handle OAuth callback
-  useEffect(() => {
-    const searchParams = new URLSearchParams(location.search);
-    const code = searchParams.get("code");
-    const state = searchParams.get("state");
-    const error = searchParams.get("error");
-    const platform = searchParams.get("platform");
-
-    // Only process if this is a YouTube callback
-    if (platform !== "youtube") {
-      return;
-    }
-
-    // Clean up URL after processing
-    const cleanUpUrl = () => {
-      navigate("/settings", { replace: true });
-    };
-
-    if (error) {
-      toast({
-        title: "Connection failed",
-        description: `YouTube authorization failed: ${error}`,
-        variant: "destructive",
-      });
-      cleanUpUrl();
-      return;
-    }
-
-    if (code && state) {
-      const handleCallback = async () => {
-        setIsLoading(true);
-        try {
-          await apiClient.handleYouTubeOAuthCallback({
-            code,
-            state,
-          });
-          queryClient.invalidateQueries(queryKeys.connectedAccounts());
-
-          toast({
-            title: "Account connected",
-            description: "Your YouTube account has been connected successfully",
-          });
-        } catch (error: any) {
-          toast({
-            title: "Connection failed",
-            description:
-              error instanceof Error
-                ? error.message
-                : "Failed to connect account",
-            variant: "destructive",
-          });
-        } finally {
-          setIsLoading(false);
-          cleanUpUrl();
-        }
-      };
-
-      handleCallback();
-    }
-  }, [location, navigate, queryClient, toast]);
-
-  // Initiate OAuth flow
   const connectWithYouTube = async () => {
     setIsLoading(true);
     try {
-      const result = await apiClient.getYouTubeOAuthUrl();
-
-      // Check if we got a missingCredentials response
-      if ("missingCredentials" in result) {
-        toast({
-          title: "Configuration Required",
-          description:
-            "Google API credentials are not configured. Please add them in the app settings.",
-          variant: "destructive",
-        });
-        setIsLoading(false);
-        return;
-      }
-
-      // Open OAuth window instead of direct navigation
-      const oauthWindow = window.open(
-        result.url,
-        "youtube-oauth",
-        "width=600,height=700,menubar=no,toolbar=no,location=no",
-      );
-
-      if (!oauthWindow) {
-        toast({
-          title: "Popup Blocked",
-          description:
-            "Please allow popups for this site to connect with YouTube",
-          variant: "destructive",
-        });
-        setIsLoading(false);
-        return;
-      }
-
-      // Show a toast to guide the user
-      toast({
-        title: "YouTube Authentication",
-        description:
-          "Please complete the authentication in the popup window. You'll be redirected back automatically.",
+      await auth.signIn({
+        provider: "GOOGLE",
+        scope: ["openid", "https://www.googleapis.com/auth/youtube.readonly"],
       });
 
-      // Don't set isLoading to false here - it will be handled when the callback URL is processed
+      // Poll briefly to detect the new connection without requiring a manual refresh
+      const started = Date.now();
+      let connected = false;
+      while (Date.now() - started < 8000 && !connected) {
+        try {
+          await apiClient.syncOAuthConnections();
+        } catch (e) {
+          console.error("syncOAuthConnections failed (YouTube)", e);
+        }
+        await queryClient.invalidateQueries(queryKeys.connectedAccounts());
+        const latest = await apiClient.getConnectedAccounts();
+        connected =
+          Array.isArray(latest) &&
+          latest.some((a: any) => a.platform === "youtube");
+        if (!connected) await new Promise((r) => setTimeout(r, 800));
+      }
+
+      toast({
+        title: connected ? "YouTube connected" : "Continue in the popup",
+        description: connected
+          ? "Your YouTube account is now connected."
+          : "Finish connecting Google/YouTube in the popup. We'll refresh your accounts automatically.",
+      });
     } catch (error: any) {
       toast({
         title: "Connection failed",
         description:
           error instanceof Error
             ? error.message
-            : "Failed to initiate YouTube connection",
+            : "Failed to open the Google sign-in flow",
         variant: "destructive",
       });
+    } finally {
       setIsLoading(false);
     }
   };
@@ -15197,127 +19062,51 @@ function InstagramOAuthButton() {
 }
 
 function LinkedInOAuthButton() {
-  const queryClient = useQueryClient();
   const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
-  const navigate = useNavigate();
-  const location = useLocation();
+  const auth = useAuth();
 
-  // Handle OAuth callback
-  useEffect(() => {
-    const searchParams = new URLSearchParams(location.search);
-    const code = searchParams.get("code");
-    const state = searchParams.get("state");
-    const error = searchParams.get("error");
-    const platform = searchParams.get("platform");
-
-    // Only process if this is a LinkedIn callback
-    if (platform !== "linkedin") {
-      return;
-    }
-
-    // Clean up URL after processing
-    const cleanUpUrl = () => {
-      navigate("/settings", { replace: true });
-    };
-
-    if (error) {
-      toast({
-        title: "Connection failed",
-        description: `LinkedIn authorization failed: ${error}`,
-        variant: "destructive",
-      });
-      cleanUpUrl();
-      return;
-    }
-
-    if (code && state) {
-      const handleCallback = async () => {
-        setIsLoading(true);
-        try {
-          await apiClient.handleLinkedInOAuthCallback({
-            code,
-            state,
-          });
-          queryClient.invalidateQueries(queryKeys.connectedAccounts());
-
-          toast({
-            title: "Account connected",
-            description:
-              "Your LinkedIn account has been connected successfully",
-          });
-        } catch (callbackError: any) {
-          toast({
-            title: "Connection failed",
-            description:
-              callbackError instanceof Error
-                ? callbackError.message
-                : "Failed to connect account",
-            variant: "destructive",
-          });
-        } finally {
-          setIsLoading(false);
-          cleanUpUrl();
-        }
-      };
-
-      handleCallback();
-    }
-  }, [location, navigate, queryClient, toast]);
-
-  // Initiate OAuth flow
+  // Initiate OAuth flow using Adaptive's native integration
   const connectWithLinkedIn = async () => {
     setIsLoading(true);
     try {
-      const result = await apiClient.getLinkedInOAuthUrl();
-
-      // Check if we got a missingCredentials response
-      if ("missingCredentials" in result) {
-        toast({
-          title: "Configuration Required",
-          description:
-            "LinkedIn API credentials are not configured. Please add them in the app settings.",
-          variant: "destructive",
-        });
-        setIsLoading(false);
-        return;
-      }
-
-      // Open OAuth window instead of direct navigation
-      const oauthWindow = window.open(
-        result.url,
-        "linkedin-oauth",
-        "width=600,height=700,menubar=no,toolbar=no,location=no",
-      );
-
-      if (!oauthWindow) {
-        toast({
-          title: "Popup Blocked",
-          description:
-            "Please allow popups for this site to connect with LinkedIn",
-          variant: "destructive",
-        });
-        setIsLoading(false);
-        return;
-      }
-
-      // Show a toast to guide the user
-      toast({
-        title: "LinkedIn Authentication",
-        description:
-          "Please complete the authentication in the popup window. You'll be redirected back automatically.",
+      // Request all scopes we may need up front to avoid re-auth later
+      await auth.signIn({
+        provider: "LINKEDIN",
+        scope: ["w_member_social"],
       });
-
-      // Don't set isLoading to false here - it will be handled when the callback URL is processed
+      // Poll briefly to confirm LinkedIn appears in Connected Accounts
+      const started = Date.now();
+      let connected = false;
+      while (Date.now() - started < 8000 && !connected) {
+        try {
+          await apiClient.syncOAuthConnections();
+        } catch (e) {
+          console.error("syncOAuthConnections failed (LinkedIn)", e);
+        }
+        await queryClient.invalidateQueries(queryKeys.connectedAccounts());
+        const latest = await apiClient.getConnectedAccounts();
+        connected =
+          Array.isArray(latest) &&
+          latest.some((a: any) => a.platform === "linkedin");
+        if (!connected) await new Promise((r) => setTimeout(r, 800));
+      }
+      toast({
+        title: connected ? "LinkedIn connected" : "Continue in the popup",
+        description: connected
+          ? "Your LinkedIn account is now connected."
+          : "Finish connecting LinkedIn in the popup window. We'll refresh your accounts automatically.",
+      });
     } catch (error: any) {
       toast({
         title: "Connection failed",
         description:
           error instanceof Error
             ? error.message
-            : "Failed to initiate LinkedIn connection",
+            : "Failed to open the LinkedIn sign-in flow",
         variant: "destructive",
       });
+    } finally {
       setIsLoading(false);
     }
   };
@@ -15493,6 +19282,16 @@ function BrandPersonaDashboard() {
   );
 
   const [editOpen, setEditOpen] = React.useState(false);
+
+  // Poll brand context while analysis is running to avoid getting stuck on the spinner
+  React.useEffect(() => {
+    if (!isAnalyzing) return;
+    const id = setInterval(() => {
+      queryClient.invalidateQueries(["brandContext"]);
+    }, 5000);
+    return () => clearInterval(id);
+  }, [isAnalyzing, queryClient]);
+
   const updateBrandContextMutation = useMutation(apiClient.updateBrandContext, {
     onSuccess: () => {
       queryClient.invalidateQueries(["brandContext"]);
@@ -15594,7 +19393,16 @@ function BrandPersonaDashboard() {
                 </Alert>
               )}
               <Button
-                onClick={() => analyzeBrandContextMutation.mutate()}
+                onClick={() => {
+                  analyzeBrandContextMutation.mutate();
+                  void apiClient
+                    .triggerAdvancedInsightsGeneration({})
+                    .then(() =>
+                      queryClient.invalidateQueries([
+                        "advancedInsightsSettings",
+                      ]),
+                    );
+                }}
                 disabled={analyzeBrandContextMutation.isLoading}
                 size="lg"
                 className="mt-6"
@@ -15699,6 +19507,12 @@ function BrandPersonaDashboard() {
   const competitorAnalysis = brandContext.competitorAnalysis;
   const contentStrategy = brandContext.contentOpportunities;
   const industryContext = brandContext.industryContext;
+  const audiencePersonas = (brandContext as any)?.audiencePersonas as
+    | any[]
+    | undefined;
+  const creativeGuidelines = (brandContext as any)?.creativeGuidelines as
+    | any
+    | undefined;
 
   const hasContentStrategy = !!(
     contentStrategy &&
@@ -15761,7 +19575,14 @@ function BrandPersonaDashboard() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => analyzeBrandContextMutation.mutate()}
+            onClick={() => {
+              analyzeBrandContextMutation.mutate();
+              void apiClient
+                .triggerAdvancedInsightsGeneration({})
+                .then(() =>
+                  queryClient.invalidateQueries(["advancedInsightsSettings"]),
+                );
+            }}
             disabled={analyzeBrandContextMutation.isLoading}
           >
             {analyzeBrandContextMutation.isLoading ? (
@@ -15791,7 +19612,11 @@ function BrandPersonaDashboard() {
               <div className="text-sm text-muted-foreground">Loading...</div>
             ) : (
               <>
-                <Accordion type="single" collapsible className="w-full">
+                <Accordion
+                  type="single"
+                  collapsible
+                  className="w-full glass-surface rounded-2xl p-2 md:p-4 border border-border/50 backdrop-blur"
+                >
                   <AccordionItem value="industry">
                     <AccordionTrigger>Industry & Market</AccordionTrigger>
                     <AccordionContent>
@@ -16324,6 +20149,179 @@ function BrandPersonaDashboard() {
                       )}
                     </ul>
                   </div>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Audience Personas */}
+      {Array.isArray(audiencePersonas) && audiencePersonas.length > 0 && (
+        <Card className="overflow-hidden">
+          <CardHeader className="border-b bg-secondary/20">
+            <CardTitle className="flex items-center gap-2">
+              <Users className="h-5 w-5" />
+              Audience Personas
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {audiencePersonas.map((p: any, idx: number) => (
+                <Card key={idx} className="p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <h4 className="font-semibold">
+                      {p?.name || p?.title || `Persona ${idx + 1}`}
+                    </h4>
+                    {p?.archetype && (
+                      <Badge variant="secondary">{p.archetype}</Badge>
+                    )}
+                  </div>
+                  {p?.summary && (
+                    <p className="text-sm text-muted-foreground mb-3">
+                      {p.summary}
+                    </p>
+                  )}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                    {p?.demographics && (
+                      <div>
+                        <div className="font-medium">Demographics</div>
+                        <p className="text-muted-foreground">
+                          {typeof p.demographics === "string"
+                            ? p.demographics
+                            : JSON.stringify(p.demographics)}
+                        </p>
+                      </div>
+                    )}
+                    {p?.goals && (
+                      <div>
+                        <div className="font-medium">Goals</div>
+                        <ul className="list-disc pl-4 text-muted-foreground">
+                          {(Array.isArray(p.goals)
+                            ? p.goals
+                            : String(p.goals).split("\n")
+                          )
+                            .filter(Boolean)
+                            .map((g: string, i: number) => (
+                              <li key={i}>{g}</li>
+                            ))}
+                        </ul>
+                      </div>
+                    )}
+                    {p?.challenges && (
+                      <div>
+                        <div className="font-medium">Challenges</div>
+                        <ul className="list-disc pl-4 text-muted-foreground">
+                          {(Array.isArray(p.challenges)
+                            ? p.challenges
+                            : String(p.challenges).split("\n")
+                          )
+                            .filter(Boolean)
+                            .map((c: string, i: number) => (
+                              <li key={i}>{c}</li>
+                            ))}
+                        </ul>
+                      </div>
+                    )}
+                    {p?.preferredPlatforms && (
+                      <div>
+                        <div className="font-medium">Preferred Platforms</div>
+                        <div className="flex flex-wrap gap-2 mt-1">
+                          {(Array.isArray(p.preferredPlatforms)
+                            ? p.preferredPlatforms
+                            : String(p.preferredPlatforms).split(",")
+                          )
+                            .filter(Boolean)
+                            .map((plat: string, i: number) => (
+                              <Badge key={i} variant="outline">
+                                {plat.trim()}
+                              </Badge>
+                            ))}
+                        </div>
+                      </div>
+                    )}
+                    {p?.messaging && (
+                      <div className="sm:col-span-2">
+                        <div className="font-medium">Messaging Tips</div>
+                        <p className="text-muted-foreground">{p.messaging}</p>
+                      </div>
+                    )}
+                  </div>
+                </Card>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Creative Guidelines */}
+      {creativeGuidelines && (
+        <Card className="overflow-hidden">
+          <CardHeader className="border-b bg-secondary/20">
+            <CardTitle className="flex items-center gap-2">
+              <Palette className="h-5 w-5" />
+              Creative Guidelines
+            </CardTitle>
+            <CardDescription>
+              Suggested colors and logo usage based on your brand assets
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="p-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Color Palette */}
+              <div>
+                <h4 className="font-semibold mb-2">Color Palette</h4>
+                <div className="flex flex-wrap gap-3">
+                  {(Array.isArray((creativeGuidelines as any)?.colors)
+                    ? (creativeGuidelines as any).colors
+                    : Array.isArray((creativeGuidelines as any)?.colorPalette)
+                      ? (creativeGuidelines as any).colorPalette
+                      : Array.isArray((creativeGuidelines as any)?.palette)
+                        ? (creativeGuidelines as any).palette
+                        : []
+                  ).map((c: any, i: number) => {
+                    const value =
+                      typeof c === "string"
+                        ? c
+                        : c?.hex || c?.value || c?.color || "#999";
+                    const label = typeof c === "string" ? c : c?.name || value;
+                    return (
+                      <div key={i} className="w-28">
+                        <div
+                          className="h-12 w-28 rounded-md border"
+                          style={{ backgroundColor: value }}
+                        />
+                        <div className="text-xs mt-1 truncate" title={label}>
+                          {label}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Logos */}
+              <div>
+                <h4 className="font-semibold mb-2">Logos</h4>
+                <div className="flex flex-wrap gap-4 items-center">
+                  {(Array.isArray((creativeGuidelines as any)?.logos)
+                    ? (creativeGuidelines as any).logos
+                    : Array.isArray((creativeGuidelines as any)?.logoUrls)
+                      ? (creativeGuidelines as any).logoUrls
+                      : []
+                  ).map((url: string, i: number) => (
+                    <img
+                      key={i}
+                      src={url}
+                      alt={`Logo ${i + 1}`}
+                      className="h-12 w-auto object-contain border rounded p-1 bg-white"
+                    />
+                  ))}
+                </div>
+                {(creativeGuidelines as any)?.logoUsage && (
+                  <p className="text-sm text-muted-foreground mt-3">
+                    {(creativeGuidelines as any).logoUsage}
+                  </p>
                 )}
               </div>
             </div>
@@ -17433,7 +21431,7 @@ function SubscriptionManagementTab() {
       case "image_generation":
         return "Image Generation";
       case "video_generation":
-        return "Video Generation";
+        return "Video Script Generation";
       case "trending_analysis":
         return "Trending Analysis";
       case "audience_insights":
@@ -17461,7 +21459,7 @@ function SubscriptionManagementTab() {
         "3,000 ACUs included monthly",
         "Advanced AI content generation",
         "Viral thread creation",
-        "Video generation",
+        "Video script studio",
         "Advanced analytics",
         "Up to 5 social accounts",
         "Priority email support",
@@ -18248,6 +22246,125 @@ function UserManagementTab({
   );
 }
 
+function ProofVerifier() {
+  const [mode, setMode] = useState<"text" | "hash">("text");
+  const [inputText, setInputText] = useState("");
+  const [inputHash, setInputHash] = useState("");
+  const computeHash = useMutation(apiClient.computeContentSha256);
+  const verifyProof = useMutation(apiClient.verifyIcpProof);
+
+  const onVerify = async () => {
+    let hash = inputHash.trim();
+    if (mode === "text") {
+      if (!inputText.trim()) return;
+      const res = await computeHash.mutateAsync({ content: inputText });
+      hash = res.hash;
+      setInputHash(hash);
+    } else if (!hash) {
+      return;
+    }
+    verifyProof.mutate({ hash });
+  };
+
+  const verifying = computeHash.isLoading || verifyProof.isLoading;
+  const result = verifyProof.data as any | undefined;
+
+  return (
+    <Card className="overflow-hidden">
+      <CardHeader className="border-b bg-secondary/10">
+        <CardTitle className="text-base">Verify a Proof</CardTitle>
+        <CardDescription>
+          Check if a proof JSON exists at standard paths across ICP gateways.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="p-6 space-y-4">
+        <div className="flex gap-2">
+          <Button
+            variant={mode === "text" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setMode("text")}
+            className="rounded-full"
+          >
+            From Text
+          </Button>
+          <Button
+            variant={mode === "hash" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setMode("hash")}
+            className="rounded-full"
+          >
+            From Hash
+          </Button>
+        </div>
+
+        {mode === "text" ? (
+          <div className="space-y-2">
+            <Label htmlFor="proof-text">Content</Label>
+            <Textarea
+              id="proof-text"
+              placeholder="Paste the exact content to hash"
+              value={inputText}
+              onChange={(e) => setInputText(e.target.value)}
+              className="min-h-[120px]"
+            />
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <Label htmlFor="proof-hash">SHA-256 Hash</Label>
+            <Input
+              id="proof-hash"
+              placeholder="e.g., a3f5…"
+              value={inputHash}
+              onChange={(e) => setInputHash(e.target.value)}
+            />
+          </div>
+        )}
+
+        <div className="flex gap-3">
+          <Button
+            onClick={onVerify}
+            disabled={
+              verifying ||
+              (mode === "text" ? !inputText.trim() : !inputHash.trim())
+            }
+            className="rounded-full"
+          >
+            {verifying ? "Verifying…" : "Verify"}
+          </Button>
+          {result?.proofUrl && (
+            <Button variant="outline" asChild className="rounded-full">
+              <a href={result.proofUrl} target="_blank" rel="noreferrer">
+                Open Proof
+              </a>
+            </Button>
+          )}
+        </div>
+
+        {result && (
+          <div
+            className={`p-3 rounded-md ${result.status === "VERIFIED" ? "bg-green-50 dark:bg-green-950/20 border border-green-200 dark:border-green-800" : result.status === "NOT_FOUND" ? "bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800" : "bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800"}`}
+          >
+            <div className="text-sm font-medium">Status: {result.status}</div>
+            {result.proofUrl && (
+              <div className="text-xs break-all">
+                URL:{" "}
+                <a
+                  className="text-primary underline"
+                  href={result.proofUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {result.proofUrl}
+                </a>
+              </div>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function SettingsPage() {
   const queryClient = useQueryClient();
   const {
@@ -18270,9 +22387,10 @@ function SettingsPage() {
     ["advancedInsightsSettings"],
     () => apiClient.getAdvancedInsights({}),
     {
-      staleTime: 5 * 60 * 1000,
-      refetchOnWindowFocus: false,
-      refetchOnMount: false,
+      staleTime: 0,
+      refetchOnWindowFocus: true,
+      refetchOnMount: true,
+      refetchInterval: 5000,
     },
   );
 
@@ -18303,6 +22421,9 @@ function SettingsPage() {
   );
 
   const [brandVoice, setBrandVoice] = useState("professional");
+  const auth = useAuth();
+  const [activeSubTab, setActiveSubTab] = useState("socialAccounts");
+  const [isBrandVibePolling, setIsBrandVibePolling] = useState(false);
   const [tonePriorities, setTonePriorities] = useState<string[]>([]);
   const [phrasesToUse, setPhrasesToUse] = useState<string[]>([]);
   const [phrasesToAvoid, setPhrasesToAvoid] = useState<string[]>([]);
@@ -18319,7 +22440,69 @@ function SettingsPage() {
   }>({});
   const [fetchFrequency, setFetchFrequency] = useState("manual");
   const [emailAlertsEnabled, setEmailAlertsEnabled] = useState(false);
+  const { brandContext } = useBrandContext();
   const [priorityThreshold, setPriorityThreshold] = useState(8);
+  const [ideasBeta, setIdeasBeta] = useState(false);
+  // ICP (Beta) state & queries
+  const [newCanisterId, setNewCanisterId] = useState("");
+  const [newCanisterLabel, setNewCanisterLabel] = useState("");
+  const [probeMap, setProbeMap] = useState<Record<string, any>>({});
+  const {
+    data: icpCanisters,
+    refetch: refetchIcpCanisters,
+    isLoading: isLoadingIcpCanisters,
+  } = useQuery(["icpCanisters"], () => apiClient.listIcpCanisters());
+  const addCanister = useMutation(apiClient.addIcpCanister, {
+    onSuccess: () => {
+      setNewCanisterId("");
+      setNewCanisterLabel("");
+      queryClient.invalidateQueries(["icpCanisters"]);
+    },
+  });
+  const removeCanister = useMutation(apiClient.removeIcpCanister, {
+    onSuccess: () => {
+      queryClient.invalidateQueries(["icpCanisters"]);
+    },
+  });
+  const probeGateway = useMutation(apiClient.probeIcpGateways);
+  const { toast } = useToast();
+
+  // ICP audits
+  const {
+    data: icpAudits,
+    isLoading: isLoadingAudits,
+    refetch: refetchAudits,
+  } = useQuery(["icpAudits"], () =>
+    apiClient.getIcpProofAudits({ limit: 100 }),
+  );
+
+  const icpAuditsCsv = React.useMemo(() => {
+    if (!icpAudits || (Array.isArray(icpAudits) && icpAudits.length === 0))
+      return "";
+    const header = [
+      "checkedAt",
+      "status",
+      "hash",
+      "canisterId",
+      "gateway",
+      "httpStatus",
+      "proofUrl",
+    ].join(",");
+    const rows = (icpAudits as any[]).map((r) =>
+      [
+        r.checkedAt ? new Date(r.checkedAt).toISOString() : "",
+        r.status ?? "",
+        r.hash ?? "",
+        r.canisterId ?? "",
+        r.gateway ?? "",
+        r.httpStatus ?? "",
+        r.proofUrl ?? "",
+      ]
+        .map((v) => `"${String(v).replace(/"/g, '""')}"`)
+        .join(","),
+    );
+    return [header, ...rows].join("\n");
+  }, [icpAudits]);
 
   // Load brand guidelines data when available
   useEffect(() => {
@@ -18375,8 +22558,37 @@ function SettingsPage() {
       setFetchFrequency(userSettings.fetchFrequency);
       setEmailAlertsEnabled(userSettings.emailAlertsEnabled || false);
       setPriorityThreshold(userSettings.emailAlertsPriorityThreshold || 8);
+      setIdeasBeta(Boolean((userSettings as any).ideasBetaEnabled));
     }
   }, [userSettings]);
+
+  // Auto-refresh Brand Vibe status while polling
+  useEffect(() => {
+    if (!isBrandVibePolling) return;
+    const id = setInterval(() => {
+      queryClient.invalidateQueries(["brandContext"]);
+    }, 5000);
+    return () => clearInterval(id);
+  }, [isBrandVibePolling, queryClient]);
+
+  useEffect(() => {
+    if (!isBrandVibePolling) return;
+    if (brandContext?.analysisStatus === "COMPLETED") {
+      setIsBrandVibePolling(false);
+      toast({
+        title: "Brand Vibe is ready",
+        description: "We also sent you a confirmation email.",
+      });
+      queryClient.invalidateQueries(["brandContext"]);
+    } else if (brandContext?.analysisStatus === "FAILED") {
+      setIsBrandVibePolling(false);
+      toast({
+        title: "Brand Vibe analysis failed",
+        description: "Please try again or update your links.",
+        variant: "destructive",
+      });
+    }
+  }, [isBrandVibePolling, brandContext, toast, queryClient]);
 
   // Save brand guidelines
   const saveBrandGuidelinesMutation = useMutation(
@@ -18384,6 +22596,13 @@ function SettingsPage() {
     {
       onSuccess: () => {
         queryClient.invalidateQueries(queryKeys.brandGuidelines());
+        // Switch to Brand Vibe tab and start generation
+        setActiveSubTab("brandPersona");
+        analyzeBrandContextMutation.mutate();
+        triggerInsightsSettings.mutate({});
+        queryClient.invalidateQueries(["advancedInsightsSettings"]);
+        setIsBrandVibePolling(true);
+        queryClient.invalidateQueries(["brandContext"]);
         toast({
           title: "Brand guidelines saved",
           description: "Your brand guidelines have been updated successfully",
@@ -18419,14 +22638,22 @@ function SettingsPage() {
     },
   });
 
+  // Start Brand Vibe generation
+  const analyzeBrandContextMutation = useMutation(
+    apiClient.analyzeBrandContext,
+    {
+      onSuccess: () => {
+        queryClient.invalidateQueries(["brandContext"]);
+      },
+    },
+  );
+
   // Facebook OAuth connection
   const [facebookToken, setFacebookToken] = useState("");
   const [availablePages, setAvailablePages] = useState<Array<{
     id: string;
     name: string;
   }> | null>(null);
-  const { toast } = useToast();
-
   const connectFacebookMutation = useMutation(
     (params: {
       accessToken: string;
@@ -18503,6 +22730,89 @@ function SettingsPage() {
     setFacebookToken("");
   };
 
+  const reconnectAccount = async (account: any) => {
+    try {
+      if (account.platform === "twitter") {
+        await auth.signIn({
+          provider: "TWITTER",
+          scope: ["tweet.read", "users.read", "tweet.write", "offline.access"],
+        });
+      } else if (account.platform === "linkedin") {
+        await auth.signIn({ provider: "LINKEDIN", scope: ["w_member_social"] });
+      } else if (account.platform === "youtube") {
+        await auth.signIn({
+          provider: "GOOGLE",
+          scope: ["openid", "https://www.googleapis.com/auth/youtube.readonly"],
+        });
+      } else if (
+        account.platform === "facebook" ||
+        account.platform === "instagram"
+      ) {
+        const result = await apiClient.getFacebookOAuthUrl({
+          platform: account.platform,
+        });
+        if ("missingCredentials" in result) {
+          toast({
+            title: "Configuration Required",
+            description:
+              "Facebook/Instagram API credentials are not configured.",
+            variant: "destructive",
+          });
+          return;
+        }
+        window.open(
+          result.url,
+          `${account.platform}-reconnect`,
+          "width=600,height=700,menubar=no,toolbar=no,location=no",
+        );
+        toast({
+          title: "Continue in the popup",
+          description:
+            "Finish the Facebook/Instagram flow in the popup. We'll update your connection automatically.",
+        });
+      }
+
+      // Poll for up to ~12s to detect successful reconnection
+      const started = Date.now();
+      let connected = false;
+      const platformKey = String(account.platform);
+      while (Date.now() - started < 12000 && !connected) {
+        try {
+          await apiClient.syncOAuthConnections();
+        } catch (e) {
+          console.error("syncOAuthConnections failed (Reconnect)", e);
+        }
+        await queryClient.invalidateQueries(queryKeys.connectedAccounts());
+        const latest = await apiClient.getConnectedAccounts();
+        connected =
+          Array.isArray(latest) &&
+          latest.some((a: any) => {
+            const okPlatform = a.platform === platformKey;
+            const valid =
+              Boolean(a.accessToken) &&
+              (!a.expiresAt || new Date(a.expiresAt) > new Date());
+            return okPlatform && valid;
+          });
+        if (!connected) {
+          await new Promise((r) => setTimeout(r, 900));
+        }
+      }
+
+      toast({
+        title: connected ? "Reconnected" : "Reconnect in progress",
+        description: connected
+          ? `${platformKey.charAt(0).toUpperCase() + platformKey.slice(1)} is connected again.`
+          : "If the popup is still open, finish the steps there and we'll auto-refresh.",
+      });
+    } catch (e: any) {
+      toast({
+        title: "Reconnect failed",
+        description: e instanceof Error ? e.message : "Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
+
   // Manual account connection
   const [manualAccount, setManualAccount] = useState({
     platform: "twitter",
@@ -18513,6 +22823,57 @@ function SettingsPage() {
     pageToken: "",
   });
 
+  // LinkedIn quick post controls
+  const isLinkedInConnected = accounts?.some((a) => a.platform === "linkedin");
+  const [liPersonalText, setLiPersonalText] = useState(
+    "Hello LinkedIn — posted via SocialWave test!",
+  );
+  const [liOrgText, setLiOrgText] = useState(
+    "Hello from our Page — posted via SocialWave test!",
+  );
+  const [selectedOrgUrn, setSelectedOrgUrn] = useState<string | undefined>();
+
+  const { data: linkedinOrgs, isLoading: isLoadingLinkedInOrgs } = useQuery(
+    ["linkedinOrganizations"],
+    () => apiClient.listLinkedInOrganizations(),
+    { enabled: !!isLinkedInConnected },
+  );
+
+  const postLiPersonal = useMutation(apiClient.postLinkedInPersonalUpdate, {
+    onSuccess: (res: any) => {
+      toast({
+        title: "Posted to LinkedIn",
+        description: res?.postUrl
+          ? "Your test update is live."
+          : "Your test update was posted.",
+      });
+      setLiPersonalText("Hello LinkedIn — posted via SocialWave test!");
+    },
+    onError: (err: any) =>
+      toast({
+        title: "Failed to post",
+        description: err instanceof Error ? err.message : "Please try again.",
+        variant: "destructive",
+      }),
+  });
+
+  const postLiOrg = useMutation(apiClient.postLinkedInOrganizationUpdate, {
+    onSuccess: (res: any) => {
+      toast({
+        title: "Posted to LinkedIn Page",
+        description: res?.postUrl
+          ? "Your test Page update is live."
+          : "Your test Page update was posted.",
+      });
+      setLiOrgText("Hello from our Page — posted via SocialWave test!");
+    },
+    onError: (err: any) =>
+      toast({
+        title: "Failed to post to Page",
+        description: err instanceof Error ? err.message : "Please try again.",
+        variant: "destructive",
+      }),
+  });
   const connectManualMutation = useMutation(apiClient.connectManualAccount, {
     onSuccess: () => {
       queryClient.invalidateQueries(queryKeys.connectedAccounts());
@@ -18627,7 +22988,7 @@ function SettingsPage() {
       />
       <h1 className="text-3xl font-bold mb-2 gradient-text">Settings</h1>
       <p className="text-muted-foreground text-lg mb-8">
-        Manage your accounts and brand guidelines
+        Manage your accounts and Brand Vibe
       </p>
 
       <Tabs defaultValue="brandAccounts" className="mb-8">
@@ -18637,6 +22998,9 @@ function SettingsPage() {
           </TabsTrigger>
           <TabsTrigger value="preferences" className="rounded-lg px-4 py-2">
             Preferences
+          </TabsTrigger>
+          <TabsTrigger value="icp" className="rounded-lg px-4 py-2">
+            ICP (Beta)
           </TabsTrigger>
           <TabsTrigger value="subscription" className="rounded-lg px-4 py-2">
             Subscription & ACUs
@@ -18655,7 +23019,12 @@ function SettingsPage() {
         <TabsContent value="brandAccounts">
           <div className="space-y-6">
             {/* Brand Accounts Sub-navigation */}
-            <Tabs defaultValue="socialAccounts" className="w-full">
+            <Tabs
+              value={activeSubTab}
+              onValueChange={setActiveSubTab}
+              className="w-full"
+            >
+              {" "}
               <TabsList className="grid w-full grid-cols-4 mb-6">
                 <TabsTrigger value="socialAccounts" className="text-sm">
                   Social Accounts
@@ -18670,7 +23039,6 @@ function SettingsPage() {
                   My Documents
                 </TabsTrigger>
               </TabsList>
-
               {/* Social Accounts Sub-tab */}
               <TabsContent value="socialAccounts">
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
@@ -18730,18 +23098,58 @@ function SettingsPage() {
                                     </div>
                                   </div>
                                 </div>
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() =>
-                                    disconnectMutation.mutate({
-                                      accountId: account.id,
-                                    })
-                                  }
-                                  className="rounded-full border-primary/20 hover:bg-primary/5"
-                                >
-                                  Disconnect
-                                </Button>
+                                <div className="flex items-center gap-3">
+                                  <div
+                                    className={`px-2 py-1 rounded-full text-xs ${
+                                      Boolean((account as any).accessToken) &&
+                                      (!(account as any).expiresAt ||
+                                        new Date((account as any).expiresAt) >
+                                          new Date())
+                                        ? "bg-green-100 text-green-700"
+                                        : "bg-amber-100 text-amber-700"
+                                    }`}
+                                  >
+                                    {Boolean((account as any).accessToken) &&
+                                    (!(account as any).expiresAt ||
+                                      new Date((account as any).expiresAt) >
+                                        new Date())
+                                      ? "Connected"
+                                      : (account as any).expiresAt &&
+                                          new Date((account as any).expiresAt) <
+                                            new Date()
+                                        ? "Expired — reconnect"
+                                        : "Not connected"}
+                                  </div>
+
+                                  {!(
+                                    Boolean((account as any).accessToken) &&
+                                    (!(account as any).expiresAt ||
+                                      new Date((account as any).expiresAt) >
+                                        new Date())
+                                  ) && (
+                                    <Button
+                                      variant="secondary"
+                                      size="sm"
+                                      onClick={() => reconnectAccount(account)}
+                                      className="rounded-full"
+                                    >
+                                      Reconnect
+                                    </Button>
+                                  )}
+
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() =>
+                                      disconnectMutation.mutate({
+                                        accountId: (account as any).id,
+                                      })
+                                    }
+                                    className="rounded-full border-primary/20 hover:bg-primary/5"
+                                  >
+                                    Disconnect
+                                  </Button>
+                                </div>
                               </div>
                             ))}
                         </div>
@@ -19146,6 +23554,132 @@ function SettingsPage() {
                       </CardContent>
                     </Card>
 
+                    {/* LinkedIn Quick Post (Test) */}
+                    {isLinkedInConnected && (
+                      <Card className="overflow-hidden">
+                        <CardHeader className="border-b bg-secondary/20">
+                          <CardTitle className="flex items-center gap-2">
+                            <Linkedin className="h-5 w-5 text-blue-600" />
+                            LinkedIn Quick Post (Test)
+                          </CardTitle>
+                          <CardDescription>
+                            Post a quick test update to your profile or a Page
+                            to verify your connection.
+                          </CardDescription>
+                        </CardHeader>
+                        <CardContent className="p-6 space-y-6">
+                          {/* Personal */}
+                          <div className="space-y-3">
+                            <Label className="text-sm">Personal update</Label>
+                            <Textarea
+                              value={liPersonalText}
+                              onChange={(e) =>
+                                setLiPersonalText(e.target.value)
+                              }
+                              className="border-secondary/50 focus:border-primary min-h-[80px]"
+                              placeholder="Write something..."
+                            />
+                            <Button
+                              onClick={() =>
+                                postLiPersonal.mutate({
+                                  content: liPersonalText,
+                                  visibility: "PUBLIC",
+                                })
+                              }
+                              disabled={
+                                !liPersonalText.trim() ||
+                                postLiPersonal.isLoading
+                              }
+                              className="rounded-full"
+                            >
+                              {postLiPersonal.isLoading ? (
+                                <>
+                                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                                  Posting...
+                                </>
+                              ) : (
+                                "Post to My Profile"
+                              )}
+                            </Button>
+                          </div>
+
+                          <Separator className="my-2" />
+
+                          {/* Organization */}
+                          <div className="space-y-3">
+                            <Label className="text-sm">Post to a Page</Label>
+                            {isLoadingLinkedInOrgs ? (
+                              <div className="text-sm text-muted-foreground">
+                                Loading Pages…
+                              </div>
+                            ) : (linkedinOrgs?.length ?? 0) > 0 ? (
+                              <div className="space-y-3">
+                                <div className="flex flex-col gap-2">
+                                  <label className="text-xs text-muted-foreground">
+                                    Select Page
+                                  </label>
+                                  <select
+                                    value={selectedOrgUrn ?? ""}
+                                    onChange={(e) =>
+                                      setSelectedOrgUrn(e.target.value)
+                                    }
+                                    className="w-full p-3 rounded-lg border border-secondary/50 bg-background focus:border-primary outline-none"
+                                  >
+                                    <option value="" disabled>
+                                      Select a Page
+                                    </option>
+                                    {linkedinOrgs?.map((org: any) => (
+                                      <option key={org.urn} value={org.urn}>
+                                        {org.name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                                <Textarea
+                                  value={liOrgText}
+                                  onChange={(e) => setLiOrgText(e.target.value)}
+                                  className="border-secondary/50 focus:border-primary min-h-[80px]"
+                                  placeholder="Write something for your Page..."
+                                />
+                                <div>
+                                  <Button
+                                    onClick={() =>
+                                      selectedOrgUrn &&
+                                      postLiOrg.mutate({
+                                        organizationUrn: selectedOrgUrn,
+                                        content: liOrgText,
+                                        visibility: "PUBLIC",
+                                      })
+                                    }
+                                    disabled={
+                                      !selectedOrgUrn ||
+                                      !liOrgText.trim() ||
+                                      postLiOrg.isLoading
+                                    }
+                                    className="rounded-full"
+                                  >
+                                    {postLiOrg.isLoading ? (
+                                      <>
+                                        <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                                        Posting to Page...
+                                      </>
+                                    ) : (
+                                      "Post to Selected Page"
+                                    )}
+                                  </Button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="text-sm text-muted-foreground">
+                                No Pages found for your account. Ensure you have
+                                admin access.
+                              </div>
+                            )}
+                          </div>
+                        </CardContent>
+                      </Card>
+                    )}
+
                     {/* Manual Token Connection */}
                     <Card className="overflow-hidden">
                       <CardHeader className="border-b bg-secondary/20">
@@ -19255,7 +23789,6 @@ function SettingsPage() {
                   </div>
                 </div>
               </TabsContent>
-
               {/* Brand Guidelines Sub-tab */}
               <TabsContent value="brandGuidelines">
                 <div className="max-w-4xl mx-auto">
@@ -19267,7 +23800,7 @@ function SettingsPage() {
                       <CardDescription>
                         {brandGuidelines &&
                         Object.keys(brandGuidelines).length > 0
-                          ? "Update your brand voice to ensure AI responses match your style"
+                          ? "Update your Brand Vibe so everything sounds and feels like you"
                           : "Set up your brand voice so AI-generated responses sound authentically like your brand"}
                       </CardDescription>
                     </CardHeader>
@@ -19842,6 +24375,18 @@ function SettingsPage() {
                           </div>
                         </div>
 
+                        <div className="mt-6 space-y-2">
+                          <Label className="text-base font-medium">
+                            Additional Documents (optional)
+                          </Label>
+                          <p className="text-sm text-muted-foreground">
+                            Upload PDFs, briefs, transcripts, or research to
+                            help personalize your brand vibe and audience
+                            insights.
+                          </p>
+                          <DocumentUpload />
+                        </div>
+
                         <Button
                           onClick={handleSaveBrandGuidelines}
                           disabled={saveBrandGuidelinesMutation.isLoading}
@@ -19861,7 +24406,6 @@ function SettingsPage() {
                   </Card>
                 </div>
               </TabsContent>
-
               {/* Brand Persona Sub-tab */}
               <TabsContent value="brandPersona">
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -19878,6 +24422,23 @@ function SettingsPage() {
                         </CardDescription>
                       </CardHeader>
                       <CardContent className="p-6">
+                        {(!advancedInsightsSettings ||
+                          advancedInsightsSettings.status !== "COMPLETED") && (
+                          <div className="flex flex-col items-center justify-center text-center gap-3 py-4">
+                            <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground" />
+                            <p className="text-sm text-muted-foreground">
+                              Generating audience insights… this usually takes
+                              about a minute.
+                            </p>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => triggerInsightsSettings.mutate({})}
+                            >
+                              Refresh now
+                            </Button>
+                          </div>
+                        )}
                         <AudienceInsightsTab
                           insights={
                             advancedInsightsSettings &&
@@ -19900,7 +24461,6 @@ function SettingsPage() {
                   </div>
                 </div>
               </TabsContent>
-
               {/* My Documents Sub-tab */}
               <TabsContent value="documents">
                 <DocumentUpload />
@@ -19918,7 +24478,7 @@ function SettingsPage() {
                 <CardTitle>Brand Voice & Guidelines</CardTitle>
                 <CardDescription>
                   {brandGuidelines && Object.keys(brandGuidelines).length > 0
-                    ? "Update your brand voice to ensure AI responses match your style"
+                    ? "Update your Brand Vibe so everything sounds and feels like you"
                     : "Set up your brand voice so AI-generated responses sound authentically like your brand"}
                 </CardDescription>
               </CardHeader>
@@ -20445,12 +25005,41 @@ function SettingsPage() {
                     )}
                   </div>
 
+                  {/* Ideas (Beta) toggle */}
+                  <div className="space-y-3 mt-6">
+                    <Label
+                      htmlFor="ideas-beta"
+                      className="text-base font-medium"
+                    >
+                      Ideas (Beta)
+                    </Label>
+                    <p className="text-sm text-muted-foreground break-words">
+                      Enable the swipe-style ideas deck on Discover.
+                    </p>
+                    <div className="flex items-center space-x-2">
+                      <input
+                        type="checkbox"
+                        id="ideas-beta"
+                        checked={ideasBeta}
+                        onChange={(e) => setIdeasBeta(e.target.checked)}
+                        className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                      />
+                      <Label
+                        htmlFor="ideas-beta"
+                        className="text-sm font-normal"
+                      >
+                        Show Ideas (Beta) in Discover
+                      </Label>
+                    </div>
+                  </div>
+
                   <Button
                     onClick={() =>
                       saveUserSettingsMutation.mutate({
                         fetchFrequency,
                         emailAlertsEnabled,
                         emailAlertsPriorityThreshold: priorityThreshold,
+                        ideasBetaEnabled: ideasBeta,
                       })
                     }
                     disabled={saveUserSettingsMutation.isLoading}
@@ -20474,8 +25063,333 @@ function SettingsPage() {
           <DocumentUpload />
         </TabsContent>
 
+        <TabsContent value="icp">
+          <div className="max-w-4xl mx-auto space-y-6">
+            <Card className="overflow-hidden">
+              <CardHeader className="border-b bg-secondary/20">
+                <CardTitle>ICP (Beta)</CardTitle>
+                <CardDescription>
+                  Manage your ICP canisters and check gateway reachability.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="p-6 space-y-8">
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <div className="sm:col-span-2 space-y-2">
+                    <Label htmlFor="icp-canister-id">Canister ID or URL</Label>
+                    <Input
+                      id="icp-canister-id"
+                      placeholder="abcd1-efghi-... or https://&lt;canister&gt;.icp0.io"
+                      value={newCanisterId}
+                      onChange={(e) => setNewCanisterId(e.target.value)}
+                      className="border-secondary/50 focus:border-primary"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="icp-label">Label (optional)</Label>
+                    <Input
+                      id="icp-label"
+                      placeholder="e.g., Main dapp"
+                      value={newCanisterLabel}
+                      onChange={(e) => setNewCanisterLabel(e.target.value)}
+                      className="border-secondary/50 focus:border-primary"
+                    />
+                  </div>
+                </div>
+                <div className="flex gap-3">
+                  <Button
+                    onClick={() =>
+                      newCanisterId &&
+                      addCanister.mutate({
+                        canisterId: newCanisterId,
+                        label: newCanisterLabel || undefined,
+                      })
+                    }
+                    disabled={!newCanisterId || addCanister.isLoading}
+                    className="rounded-full"
+                  >
+                    {addCanister.isLoading ? <>Adding…</> : "Add Canister"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => refetchIcpCanisters()}
+                    className="rounded-full"
+                  >
+                    Refresh
+                  </Button>
+                </div>
+
+                <Separator />
+
+                {isLoadingIcpCanisters ? (
+                  <div className="text-sm text-muted-foreground">
+                    Loading canisters…
+                  </div>
+                ) : (icpCanisters?.length ?? 0) === 0 ? (
+                  <div className="text-sm text-muted-foreground">
+                    No canisters yet. Add one above.
+                  </div>
+                ) : (
+                  <div className="divide-y rounded-lg border">
+                    {icpCanisters?.map((c: any) => (
+                      <div key={c.canisterId} className="p-4">
+                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                          <div>
+                            <div className="font-medium">
+                              {c.label || "Untitled"}
+                            </div>
+                            <div className="text-xs text-muted-foreground break-all">
+                              {c.canisterId}
+                            </div>
+                          </div>
+                          <div className="flex gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                probeGateway.mutate(
+                                  { canisterIdOrUrl: c.canisterId },
+                                  {
+                                    onSuccess: (res: any) => {
+                                      setProbeMap((prev) => ({
+                                        ...prev,
+                                        [c.canisterId]: res,
+                                      }));
+                                    },
+                                  },
+                                );
+                              }}
+                              className="rounded-full"
+                            >
+                              {probeGateway.isLoading
+                                ? "Checking…"
+                                : "Check Gateways"}
+                            </Button>
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              onClick={() =>
+                                removeCanister.mutate(
+                                  { canisterId: c.canisterId },
+                                  {
+                                    onSuccess: () =>
+                                      setProbeMap((prev) => {
+                                        const copy = { ...prev };
+                                        delete copy[c.canisterId];
+                                        return copy;
+                                      }),
+                                  },
+                                )
+                              }
+                              className="rounded-full"
+                            >
+                              Remove
+                            </Button>
+                          </div>
+                        </div>
+
+                        {probeMap[c.canisterId] && (
+                          <div className="mt-3 rounded-md bg-secondary/20 p-3">
+                            <div className="text-sm">
+                              First reachable:{" "}
+                              {probeMap[c.canisterId].firstReachableUrl ? (
+                                <a
+                                  className="text-primary underline"
+                                  href={
+                                    probeMap[c.canisterId].firstReachableUrl
+                                  }
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  {probeMap[c.canisterId].firstReachableUrl}
+                                </a>
+                              ) : (
+                                <span className="text-muted-foreground">
+                                  None
+                                </span>
+                              )}
+                            </div>
+                            <div className="mt-2">
+                              <div className="text-xs text-muted-foreground mb-1">
+                                Gateways
+                              </div>
+                              <div className="grid gap-1 sm:grid-cols-2">
+                                {probeMap[c.canisterId].probes?.map(
+                                  (p: any) => (
+                                    <div
+                                      key={p.url}
+                                      className="flex items-center gap-2 text-sm"
+                                    >
+                                      <span
+                                        className={`h-2 w-2 rounded-full ${p.ok ? "bg-green-500" : "bg-red-500"}`}
+                                      />
+                                      <a
+                                        className="truncate text-primary underline"
+                                        href={p.url}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                      >
+                                        {p.url}
+                                      </a>
+                                      <span className="text-xs text-muted-foreground">
+                                        ({p.httpStatus ?? "—"})
+                                      </span>
+                                    </div>
+                                  ),
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        <Card className="overflow-hidden">
+          <CardHeader className="border-b bg-secondary/20">
+            <CardTitle>Verify Proof (Beta)</CardTitle>
+            <CardDescription>
+              Paste content or a hash to check for a published proof.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="p-6">
+            <ProofVerifier />
+          </CardContent>
+        </Card>
+
+        {/* Recent Proof Checks */}
+        <Card className="overflow-hidden mt-6">
+          <CardHeader className="border-b bg-secondary/20">
+            <CardTitle className="flex items-center justify-between">
+              <span>Recent Proof Checks</span>
+              <span className="text-xs text-muted-foreground">Last 100</span>
+            </CardTitle>
+            <CardDescription>
+              Your most recent ICP verification attempts across saved canisters
+              and gateways.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="p-6 space-y-4">
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                onClick={() => refetchAudits()}
+                disabled={isLoadingAudits}
+                className="rounded-full"
+              >
+                {isLoadingAudits ? "Refreshing…" : "Refresh"}
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  if (icpAuditsCsv) {
+                    copy(icpAuditsCsv);
+                    toast({ title: "CSV copied" });
+                  }
+                }}
+                disabled={!icpAuditsCsv}
+                className="rounded-full"
+              >
+                Copy CSV
+              </Button>
+              {icpAuditsCsv && (
+                <Button variant="outline" asChild className="rounded-full">
+                  <a
+                    href={`data:text/csv;charset=utf-8,${encodeURIComponent(icpAuditsCsv)}`}
+                    download={`icp-proof-audits-${new Date().toISOString().slice(0, 10)}.csv`}
+                  >
+                    Export CSV
+                  </a>
+                </Button>
+              )}
+            </div>
+
+            {isLoadingAudits ? (
+              <div className="text-sm text-muted-foreground">
+                Loading audits…
+              </div>
+            ) : !icpAudits ||
+              (Array.isArray(icpAudits) && icpAudits.length === 0) ? (
+              <div className="text-sm text-muted-foreground">
+                No verification attempts yet.
+              </div>
+            ) : (
+              <div className="overflow-x-auto rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="whitespace-nowrap">Time</TableHead>
+                      <TableHead className="whitespace-nowrap">
+                        Status
+                      </TableHead>
+                      <TableHead className="whitespace-nowrap">Hash</TableHead>
+                      <TableHead className="whitespace-nowrap">Link</TableHead>
+                      <TableHead className="whitespace-nowrap">
+                        Gateway
+                      </TableHead>
+                      <TableHead className="whitespace-nowrap">
+                        Canister
+                      </TableHead>
+                      <TableHead className="whitespace-nowrap">HTTP</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {(icpAudits as any[]).map((r) => (
+                      <TableRow key={`${r.id}`}>
+                        <TableCell className="text-xs whitespace-nowrap">
+                          {r.checkedAt
+                            ? new Date(r.checkedAt).toLocaleString()
+                            : "—"}
+                        </TableCell>
+                        <TableCell
+                          className={`text-xs font-medium ${r.status === "VERIFIED" ? "text-green-600" : r.status === "NOT_FOUND" ? "text-amber-600" : "text-red-600"}`}
+                        >
+                          {r.status}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          {r.hash
+                            ? `${String(r.hash).slice(0, 10)}…${String(r.hash).slice(-6)}`
+                            : "—"}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          {r.proofUrl ? (
+                            <a
+                              className="text-primary underline"
+                              href={r.proofUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Open
+                            </a>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          {r.gateway || "—"}
+                        </TableCell>
+                        <TableCell className="text-xs break-all">
+                          {r.canisterId || "—"}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          {r.httpStatus ?? "—"}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
         <TabsContent value="subscription">
-          <CreditUsageTab />
+          {" "}
+          <CreditUsageTab />{" "}
         </TabsContent>
 
         {isCurrentUserSuperAdmin && (
@@ -20670,7 +25584,11 @@ function AudienceInsightsTab({
                   {persona.description}
                 </p>
 
-                <Accordion type="single" collapsible className="w-full">
+                <Accordion
+                  type="single"
+                  collapsible
+                  className="w-full glass-surface rounded-2xl p-2 md:p-4 border border-border/50 backdrop-blur"
+                >
                   <AccordionItem value="motivations">
                     <AccordionTrigger>Motivations</AccordionTrigger>
                     <AccordionContent>
@@ -20878,7 +25796,8 @@ function InsightsTab({
 }) {
   const { data: connectedAccounts, isLoading: isLoadingAccounts } =
     useConnectedAccounts();
-  useBrandContext();
+  const brand = useBrandContext();
+  const brandSetup = !!(brand?.isSetup || brand?.hasAnalysis);
   const { data: pagesData } = usePages();
   const [selectedPageId, setSelectedPageId] = useState<string | null>(
     pagesData?.[0]?.id || null,
@@ -20902,6 +25821,10 @@ function InsightsTab({
   }, []);
 
   const [activeSubTab, setActiveSubTab] = useState(initialSubTab || "topics");
+  const [selectedGoals, setSelectedGoals] = useState<string[]>([
+    "Engagement",
+    "Growth",
+  ]);
 
   // Query for saved insights
   const { data: savedInsights } = useQuery(
@@ -20953,18 +25876,19 @@ function InsightsTab({
         setGeneratingTopic(null);
       },
       onError: (error: Error) => {
-        if (
-          error.message.toLowerCase().includes("insufficient credits") ||
-          error.message.toLowerCase().includes("credit")
-        ) {
-          // setUpgradeDialogOpen(true); // Removed upgrade dialog
-        } else {
-          toast({
-            title: "Generation Failed",
-            description: error.message,
-            variant: "destructive",
-          });
-        }
+        const message = (error?.message || "").toLowerCase();
+        const isCreditIssue =
+          message.includes("insufficient credits") ||
+          message.includes("credit") ||
+          message.includes("upgrade");
+        console.error("[UI] generateFromTopicMutation onError", error);
+        toast({
+          title: isCreditIssue ? "You’re out of credits" : "Generation Failed",
+          description: isCreditIssue
+            ? "Please upgrade or add credits to continue."
+            : error.message,
+          variant: "destructive",
+        });
         setGeneratingTopic(null);
       },
     },
@@ -20983,21 +25907,49 @@ function InsightsTab({
         setGeneratingPotential(null);
       },
       onError: (error: Error) => {
-        if (
-          error.message.toLowerCase().includes("insufficient credits") ||
-          error.message.toLowerCase().includes("credit")
-        ) {
-          // setUpgradeDialogOpen(true); // Removed upgrade dialog
-        } else {
-          toast({
-            title: "Generation Failed",
-            description: error.message,
-            variant: "destructive",
-          });
-        }
+        const message = (error?.message || "").toLowerCase();
+        const isCreditIssue =
+          message.includes("insufficient credits") ||
+          message.includes("credit") ||
+          message.includes("upgrade");
+        console.error("[UI] generateFromPotentialMutation onError", error);
+        toast({
+          title: isCreditIssue ? "You’re out of credits" : "Generation Failed",
+          description: isCreditIssue
+            ? "Please upgrade or add credits to continue."
+            : error.message,
+          variant: "destructive",
+        });
         setGeneratingPotential(null);
       },
     },
+  );
+
+  const handleGenerateFromTopic = useCallback(
+    (topic: any, format: string) => {
+      try {
+        console.log("[UI] handleGenerateFromTopic", {
+          topicId: topic?.id,
+          title: topic?.topic,
+          format,
+        });
+      } catch {}
+      generateFromTopicMutation.mutate({ topic, format });
+    },
+    [generateFromTopicMutation],
+  );
+
+  const handleGenerateFromPotential = useCallback(
+    (post: any) => {
+      try {
+        console.log("[UI] handleGenerateFromPotential", {
+          postId: post?.id,
+          concept: post?.concept,
+        });
+      } catch {}
+      generateFromPotentialMutation.mutate({ post });
+    },
+    [generateFromPotentialMutation],
   );
 
   const submitFeedbackMutation = useMutation({
@@ -21028,10 +25980,14 @@ function InsightsTab({
     () =>
       apiClient.getAdvancedInsights({ pageId: selectedPageId || undefined }),
     {
-      // Disable all automatic refetching to prevent unwanted refreshes
-      refetchInterval: false,
+      // Auto-refresh while generation is in progress, otherwise stay idle
+      refetchInterval: (data) =>
+        data?.status === "GENERATING" || data?.status === "PENDING"
+          ? 5000
+          : false,
+      refetchIntervalInBackground: true,
       refetchOnWindowFocus: false,
-      refetchOnMount: false, // Disabled to prevent auto-refresh on mount
+      refetchOnMount: false, // Keep disabled to avoid unexpected jumps; interval handles progress
       staleTime: Infinity, // Never consider data stale automatically
       cacheTime: 24 * 60 * 60 * 1000, // 24 hours cache time
     },
@@ -21182,7 +26138,7 @@ function InsightsTab({
 
   // Create a unified refresh function and register it with parent
   const unifiedRefresh = useCallback(() => {
-    triggerGeneration({ pageId: selectedPageId || undefined, mode: "deep" });
+    triggerGeneration({ pageId: selectedPageId || undefined, force: true });
     refetch();
   }, [triggerGeneration, refetch, selectedPageId]);
 
@@ -21212,17 +26168,19 @@ function InsightsTab({
 
   // Show empty state if no connected OAuth accounts and no brand setup
   if (!connectedAccounts || connectedAccounts.length === 0) {
-    return (
-      <EmptyState
-        icon={<LinkIcon className="h-12 w-12" />}
-        title="Connect Your Social Media Accounts"
-        description="To generate content intelligence, connect at least one social account. This lets us analyze your audience and trends for personalized insights."
-      >
-        <Button asChild>
-          <a href="/settings">Connect Accounts</a>
-        </Button>
-      </EmptyState>
-    );
+    if (!brandSetup) {
+      return (
+        <EmptyState
+          icon={<LinkIcon className="h-12 w-12" />}
+          title="Connect Your Social Media Accounts"
+          description="To generate content intelligence, connect at least one social account or add your website and socials."
+        >
+          <Button asChild>
+            <a href="/settings">Connect Accounts</a>
+          </Button>
+        </EmptyState>
+      );
+    }
   }
 
   if (isLoadingInsights) {
@@ -21307,7 +26265,7 @@ function InsightsTab({
           onClick={() => {
             triggerGeneration({
               pageId: selectedPageId || undefined,
-              mode: "deep",
+              force: true,
             });
             refetch();
           }}
@@ -21326,13 +26284,58 @@ function InsightsTab({
     lastUpdated,
   } = insights;
 
+  const allActions = (() => {
+    const topicActions = (trendingTopics ?? []).map((topic: any) => ({
+      id: `topic-${topic.id ?? topic.title}`,
+      title: topic.title ?? topic.topic ?? "New topic idea",
+      goal: "Engagement",
+      description:
+        topic.reason ??
+        topic.description ??
+        "Create a post aligned with this topic.",
+      ctaLabel: "Create post",
+      onClick: () =>
+        generateFromTopicMutation.mutate({ topic, format: "post" }),
+    }));
+    const viralActions = (viralContentPotential ?? []).map((post: any) => ({
+      id: `viral-${post.id ?? post.postId ?? Math.random().toString(36).slice(2)}`,
+      title: post.title ?? post.caption ?? "High‑potential post angle",
+      goal: "Growth",
+      description:
+        post.reason ?? post.summary ?? "Turn this angle into a branded post.",
+      ctaLabel: "Create post",
+      onClick: () => handleGenerateFromPotential(post),
+    }));
+    return [...topicActions, ...viralActions];
+  })();
+
+  const filteredActions = allActions.filter((a) =>
+    selectedGoals.includes(a.goal),
+  );
+  const topActions = filteredActions.slice(0, 3);
+
   return (
     <div>
       {/* Mobile-first header */}
       <div className="mb-6">
         <div className="flex items-center justify-between mb-4">
-          <h1 className="text-xl md:text-2xl font-bold">
+          <h1 className="text-xl md:text-2xl font-bold flex items-center gap-2">
             Content Intelligence
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex items-center justify-center w-4 h-4 rounded-full border text-[10px] cursor-default">
+                    i
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p className="max-w-[260px] text-xs">
+                    All recommendations and generations here use both your Brand
+                    Guidelines and your Brand Vibe for consistent results.
+                  </p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           </h1>
           {/* Mobile refresh now handled by unified refresh system */}
           {/* Note: Mobile refresh now handled by unified system */}
@@ -21385,6 +26388,84 @@ function InsightsTab({
           </div>
         </div>
       </div>
+      {/* Action-first layout start */}
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold">Focus this week</h2>
+          <div className="flex gap-2">
+            {["Engagement", "Growth", "Conversion", "Community"].map((g) => (
+              <Button
+                key={g}
+                variant={selectedGoals.includes(g) ? "default" : "secondary"}
+                size="sm"
+                onClick={() => {
+                  setSelectedGoals((prev) => {
+                    if (prev.includes(g)) return prev.filter((x) => x !== g);
+                    if (prev.length >= 2) return prev.slice(-1).concat(g);
+                    return [...prev, g];
+                  });
+                }}
+              >
+                {g}
+              </Button>
+            ))}
+          </div>
+        </div>
+
+        {topActions.length === 0 ? (
+          <div className="text-sm text-muted-foreground">
+            No high‑priority actions yet. Try Refresh to generate new insights.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {topActions.map((a) => (
+              <Card key={a.id} className="flex flex-col">
+                <CardHeader className="pb-2">
+                  <div className="flex items-center justify-between">
+                    <Badge variant="secondary">{a.goal}</Badge>
+                    <Badge variant="outline">Low effort • High impact</Badge>
+                  </div>
+                  <CardTitle className="text-base mt-2">{a.title}</CardTitle>
+                </CardHeader>
+                <CardContent className="text-sm text-muted-foreground">
+                  {a.description}
+                </CardContent>
+                <CardFooter className="mt-auto">
+                  <Button className="w-full" onClick={a.onClick}>
+                    {a.ctaLabel}
+                  </Button>
+                </CardFooter>
+              </Card>
+            ))}
+          </div>
+        )}
+
+        {/* Removed "More opportunities" section */}
+        <div className="hidden">
+          <h3 className="text-base font-medium">More opportunities</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {filteredActions.slice(3, 9).map((a) => (
+              <Card key={a.id} className="flex flex-col">
+                <CardHeader className="pb-2">
+                  <div className="flex items-center justify-between">
+                    <Badge variant="secondary">{a.goal}</Badge>
+                  </div>
+                  <CardTitle className="text-sm mt-2">{a.title}</CardTitle>
+                </CardHeader>
+                <CardContent className="text-xs text-muted-foreground">
+                  {a.description}
+                </CardContent>
+                <CardFooter className="mt-auto">
+                  <Button size="sm" className="w-full" onClick={a.onClick}>
+                    {a.ctaLabel}
+                  </Button>
+                </CardFooter>
+              </Card>
+            ))}
+          </div>
+        </div>
+      </div>
+      {/* Action-first layout end */}
       <Tabs
         value={activeSubTab}
         onValueChange={(value) =>
@@ -21435,7 +26516,7 @@ function InsightsTab({
               }
             }}
             onGenerate={(topic, format) =>
-              generateFromTopicMutation.mutate({ topic, format })
+              handleGenerateFromTopic(topic, format)
             }
             isGenerating={generateFromTopicMutation.isLoading}
             generatingParams={generatingTopic}
@@ -21458,9 +26539,7 @@ function InsightsTab({
                 setFeedbackInfo({ post: p, type: feedbackType });
               }
             }}
-            onGenerate={(post) =>
-              generateFromPotentialMutation.mutate({ post })
-            }
+            onGenerate={(post) => handleGenerateFromPotential(post)}
             isGenerating={generateFromPotentialMutation.isLoading}
             generatingPostId={generatingPotential}
             highlightedPostId={
@@ -21543,8 +26622,12 @@ function InsightsTab({
 
 function ViralThreadsTab({
   onContentGenerated,
+  onImageGenerated,
+  onVideoGenerated,
 }: {
-  onContentGenerated: () => void;
+  onContentGenerated: (contentId?: string) => void;
+  onImageGenerated?: (pillarId: string, contentId: string) => void;
+  onVideoGenerated?: (contentId: string) => void;
 }) {
   const safeJsonParse = (str: string | null): any => {
     if (!str) return null;
@@ -21567,6 +26650,43 @@ function ViralThreadsTab({
   const [fileName, setFileName] = useState<string>("");
   const [targetPlatform, setTargetPlatform] = useState<string>("twitter");
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
+  const inlineDetailEnabled = true;
+  const [inlineConfirm, setInlineConfirm] = useState<React.ReactNode | null>(
+    null,
+  );
+
+  useEffect(() => {
+    if (!inlineConfirm) return;
+    const t = setTimeout(() => setInlineConfirm(null), 4000);
+    return () => clearTimeout(t);
+  }, [inlineConfirm]);
+  const stripMd = (s: string) => {
+    if (typeof s !== "string") return s as any;
+    return s
+      .replace(/```[\s\S]*?```/g, "")
+      .replace(/`([^`]*)`/g, "$1")
+      .replace(/!\[[^\]]*\]\(([^)]+)\)/g, "$1")
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1")
+      .replace(/[*_~]{1,3}([^*_~]+)[*_~]{1,3}/g, "$1")
+      .replace(/^>\s?/gm, "")
+      .replace(/^#{1,6}\s*/gm, "")
+      .replace(/-{3,}/g, "—")
+      .replace(/\n{3,}/g, "\n\n");
+  };
+  // Inline detail UX enhancements: ESC to exit, auto-scroll
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSelectedThreadId(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  useEffect(() => {
+    if (selectedThreadId) {
+      const el = document.getElementById(`thread-card-${selectedThreadId}`);
+      el?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [selectedThreadId]);
 
   const [showInsights, setShowInsights] = useState(false);
   const [showAnalytics, setShowAnalytics] = useState(false);
@@ -21576,12 +26696,33 @@ function ViralThreadsTab({
 
   const saveThreadMutation = useMutation(apiClient.saveViralThreadAsContent, {
     onSuccess: (data) => {
+      // Inline confirmation with a checkmark and quick link to view in Library
+      setInlineConfirm(
+        <div className="flex items-center gap-2">
+          <Check className="h-4 w-4 text-green-600" />
+          <span>Saved to Library</span>
+          <Button
+            variant="link"
+            size="sm"
+            className="h-6 px-1"
+            onClick={(e) => {
+              e.stopPropagation();
+              onContentGenerated((data as any).id);
+            }}
+          >
+            View in Library
+          </Button>
+        </div>,
+      );
       toast({
-        title: "Thread Saved!",
-        description: `"${data.title}" has been added to your content library.`,
+        title: "Saved to Library",
+        description: "Added to your content library.",
       });
-      onContentGenerated();
-      setSelectedThreadId(null); // Close the detail view
+      try {
+        // Refresh Live Results so the item reflects its saved state quickly
+        queryClient.invalidateQueries({ queryKey: queryKeys.viralThreads() });
+        queryClient.refetchQueries({ queryKey: queryKeys.viralThreads() });
+      } catch {}
     },
     onError: (error) => {
       toast({
@@ -21600,6 +26741,7 @@ function ViralThreadsTab({
   );
   const [filterByPattern, setFilterByPattern] = useState("");
   const [isEditing, setIsEditing] = useState(false);
+  const [numberedView, setNumberedView] = useState(true);
   const [editedTitle, setEditedTitle] = useState("");
   const [editedTweets, setEditedTweets] = useState<{ content: string }[]>([]);
   const [selectedThreadIds, setSelectedThreadIds] = useState<string[]>([]);
@@ -21615,8 +26757,9 @@ function ViralThreadsTab({
     queryKey: ["smartContentSuggestions"],
     queryFn: () => apiClient.getSmartContentSuggestions(),
     staleTime: 300000, // 5 minutes
+    enabled: showInsights,
+    retry: false,
   });
-
   const { data: brandVoiceProfile } = useQuery({
     queryKey: ["brandVoiceProfile"],
     queryFn: apiClient.getUserBrandVoiceProfile,
@@ -21676,8 +26819,9 @@ function ViralThreadsTab({
     queryKey: ["advancedInsights"],
     queryFn: () => apiClient.getAdvancedInsights(),
     staleTime: 600000,
+    enabled: showInsights,
+    retry: false,
   });
-
   useEffect(() => {
     if (toneTouched) return;
     // If brand guidelines already define tone/voice, don't override with profile
@@ -21753,46 +26897,53 @@ function ViralThreadsTab({
     queryKey: ["viralPatterns"],
     queryFn: apiClient.getViralPatterns,
     staleTime: 600000, // 10 minutes
+    enabled: showInsights,
+    retry: false,
   });
-
   const { data: contentStudioAnalytics } = useQuery({
     queryKey: ["contentStudioAnalytics"],
     queryFn: () => apiClient.getContentStudioAnalytics({ timeframe: "30d" }),
     staleTime: 600000, // 10 minutes
+    enabled: showAnalytics,
+    retry: false,
   });
-
   const { data: contentStudioInsights } = useQuery({
     queryKey: ["contentStudioInsights"],
     queryFn: () => apiClient.getContentStudioInsights(),
     staleTime: 600000, // 10 minutes
+    enabled: showAnalytics,
+    retry: false,
   });
-
   // Enhanced performance analytics queries
   const { data: contentStudioDashboard } = useQuery({
     queryKey: ["contentStudioDashboard"],
     queryFn: () => apiClient.getContentStudioDashboard(),
     staleTime: 600000, // 10 minutes
+    enabled: showAnalytics,
+    retry: false,
   });
-
   const { data: realTimeMetrics } = useQuery({
     queryKey: ["realTimePerformanceMetrics"],
     queryFn: () => apiClient.getRealTimePerformanceMetrics(),
     staleTime: 300000, // 5 minutes
     refetchInterval: false, // Disable auto-refresh to prevent constant refreshing
+    enabled: showAnalytics,
+    retry: false,
   });
-
   const { data: recommendationAnalytics } = useQuery({
     queryKey: ["recommendationAnalytics"],
     queryFn: () => apiClient.getRecommendationAnalytics(),
     staleTime: 600000, // 10 minutes
+    enabled: showAnalytics,
+    retry: false,
   });
-
   const { data: optimizationInsights } = useQuery({
     queryKey: ["optimizationInsights"],
     queryFn: () => apiClient.getAdvancedOptimizationInsights(),
     staleTime: 600000, // 10 minutes
+    enabled: showAnalytics,
+    retry: false,
   });
-
   // Brand context display helpers
   const personaLabel =
     ((brandGuidelines as any)?.personaName as string | undefined) ||
@@ -21814,11 +26965,13 @@ function ViralThreadsTab({
   type RepurposeThreadInput = inferRPCInputType<"repurposeOnBrandThread">;
   const [repurposeState, setRepurposeState] = useState<{
     thread: any | null;
+    threadId: string | null;
     taskId: string | null;
     platform: string | null;
     isDialogOpen: boolean;
   }>({
     thread: null,
+    threadId: null,
     taskId: null,
     platform: null,
     isDialogOpen: false,
@@ -21870,6 +27023,7 @@ function ViralThreadsTab({
         ...prev,
         taskId: data.taskId,
         platform: variables.platform,
+        threadId: variables.threadId,
         isDialogOpen: false,
       }));
       toast({ title: "Repurposing started!" });
@@ -21887,20 +27041,26 @@ function ViralThreadsTab({
   const { data: repurposeStatus } = useQuery({
     queryKey: ["repurposeStatus", repurposeState.taskId],
     queryFn: () => {
-      if (
-        !repurposeState.taskId ||
-        !repurposeState.thread?.id ||
-        !repurposeState.platform
-      ) {
+      const tid =
+        repurposeState.threadId ||
+        repurposeState.thread?.id ||
+        selectedThreadId;
+      if (!repurposeState.taskId || !tid || !repurposeState.platform) {
         return Promise.resolve(null);
       }
       return apiClient.getRepurposeResults({
         taskId: repurposeState.taskId,
-        threadId: repurposeState.thread.id,
+        threadId: tid,
         platform: repurposeState.platform,
       });
     },
-    enabled: !!repurposeState.taskId,
+    enabled:
+      !!repurposeState.taskId &&
+      !!(
+        repurposeState.threadId ||
+        repurposeState.thread?.id ||
+        selectedThreadId
+      ),
     refetchInterval: (data: any) => {
       if (!data) return false;
       return data.status === "PENDING" || data.status === "GENERATING"
@@ -21919,6 +27079,8 @@ function ViralThreadsTab({
         queryKey: queryKeys.generatedContent(),
       });
       if (repurposeStatus.newContentId) {
+        onContentGenerated(repurposeStatus.newContentId as string);
+      } else {
         onContentGenerated();
       }
       setRepurposeState((prev) => ({ ...prev, taskId: null }));
@@ -21953,7 +27115,7 @@ function ViralThreadsTab({
     onSuccess: (data) => {
       toast({ title: `${data.count} threads archived` });
       setSelectedThreadIds([]);
-      queryClient.invalidateQueries(queryKeys.viralThreads());
+      queryClient.invalidateQueries({ queryKey: queryKeys.viralThreads() });
     },
     onError: (error) => {
       toast({
@@ -21974,7 +27136,7 @@ function ViralThreadsTab({
   const updateThreadMutation = useMutation(apiClient.updateViralThread, {
     onSuccess: () => {
       toast({ title: "Thread updated successfully!" });
-      queryClient.invalidateQueries(queryKeys.viralThreads());
+      queryClient.invalidateQueries({ queryKey: queryKeys.viralThreads() });
       queryClient.invalidateQueries(
         queryKeys.viralThread(selectedThreadId ?? ""),
       );
@@ -22007,6 +27169,7 @@ function ViralThreadsTab({
 
     return () => clearTimeout(timer);
   }, [searchTerm]);
+  const [shouldAutoRefresh, setShouldAutoRefresh] = useState(false);
 
   const { data: threadsData, isLoading: isLoadingThreads } = useQuery({
     queryKey: [
@@ -22023,13 +27186,106 @@ function ViralThreadsTab({
         filterByPattern: filterByPattern,
         tagIds: selectedTagIds,
       }),
-    // Disable automatic refresh to prevent dashboard refreshing
-    refetchInterval: false,
-    refetchOnWindowFocus: false,
+    // Auto-refresh Live Results briefly while a generation task is active
+    refetchInterval: shouldAutoRefresh ? 2000 : false,
+    refetchOnWindowFocus: shouldAutoRefresh,
     staleTime: 300000, // 5 minutes (increased from 30 seconds)
     cacheTime: 600000, // 10 minutes
   });
 
+  // Auto-stop refresh after the new thread appears
+  const newThreadSeenRef = useRef(false);
+  const [latestNewThreadId, setLatestNewThreadId] = useState<string | null>(
+    null,
+  );
+  const latestNewTimeoutRef = useRef<any>(null);
+  useEffect(() => {
+    try {
+      if (!shouldAutoRefresh) return;
+      const threads = (threadsData as any)?.threads ?? [];
+      const startMs = genStartTimeRef.current ?? null;
+      if (!startMs || threads.length === 0) return;
+      const seen = threads.some((t: any) => {
+        const ts = new Date(t.createdAt).getTime();
+        return Number.isFinite(ts) && ts >= startMs - 5 * 60 * 1000;
+      });
+      if (seen && !newThreadSeenRef.current) {
+        newThreadSeenRef.current = true;
+        setTimeout(() => setShouldAutoRefresh(false), 4000);
+      }
+    } catch {}
+  }, [threadsData, shouldAutoRefresh]);
+
+  // Mark latest generated thread as New briefly
+  useEffect(() => {
+    try {
+      const threads = (threadsData as any)?.threads ?? [];
+      const startMs = genStartTimeRef.current ?? null;
+      if (!startMs || threads.length === 0) return;
+      const recent = threads
+        .slice()
+        .sort(
+          (a: any, b: any) =>
+            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+        )[0];
+      const ts = recent ? new Date(recent.createdAt).getTime() : NaN;
+      if (recent && Number.isFinite(ts) && ts >= startMs - 5 * 60 * 1000) {
+        setLatestNewThreadId(recent.id);
+        if (latestNewTimeoutRef.current) {
+          clearTimeout(latestNewTimeoutRef.current as any);
+        }
+        latestNewTimeoutRef.current = setTimeout(
+          () => setLatestNewThreadId(null),
+          20000,
+        );
+      }
+    } catch {}
+  }, [threadsData]);
+
+  const [genInProgress, setGenInProgress] = useState(false);
+  const [showReady, setShowReady] = useState(false);
+  const [progress, setProgress] = useState<number>(0);
+  const [progressLabel, setProgressLabel] = useState<string>("");
+  const getStatusMeta = (s?: string) => {
+    switch (s) {
+      case "PENDING":
+        return {
+          label: "Queued",
+          variant: "secondary",
+          description: "In line to start…",
+        };
+      case "GENERATING":
+        return {
+          label: "Generating",
+          variant: "default",
+          description: "Creating your thread…",
+        };
+      case "COMPLETED":
+        return {
+          label: "Ready",
+          variant: "default",
+          description: "Your thread is ready in Live Results.",
+        };
+      case "FAILED":
+        return {
+          label: "Failed",
+          variant: "destructive",
+          description: "We couldn't finish this run.",
+        };
+      default:
+        return { label: "", variant: "secondary", description: "" };
+    }
+  };
+  const [activeTaskId, setActiveTaskId] = useState<string | undefined>(
+    undefined,
+  );
+  const [genError, setGenError] = useState<string | undefined>(undefined);
+  const libraryRef = useRef<HTMLDivElement | null>(null);
+  const [showGenError, setShowGenError] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const genStartTimeRef = useRef<number | null>(null);
+  const lastPayloadRef = useRef<any | null>(null);
+  const autoSavePendingRef = useRef<boolean>(false);
   const {
     mutate: generateThread,
     isLoading: isGenerating,
@@ -22072,7 +27328,29 @@ function ViralThreadsTab({
         description:
           "Your thread is being generated and will appear below shortly.",
       });
-      queryClient.invalidateQueries(queryKeys.viralThreads());
+      try {
+        if (latestNewTimeoutRef.current) {
+          clearTimeout(latestNewTimeoutRef.current as any);
+          latestNewTimeoutRef.current = null;
+        }
+        setLatestNewThreadId(null);
+        newThreadSeenRef.current = false;
+        setGenInProgress(true);
+        setGenError(undefined);
+        setActiveTaskId((result as any)?.taskId);
+        setShouldAutoRefresh(true);
+        setTimeout(
+          () =>
+            libraryRef.current?.scrollIntoView({
+              behavior: "smooth",
+              block: "start",
+            }),
+          10,
+        );
+      } catch {}
+      // Force a refetch so the new thread appears immediately in Live Results
+      queryClient.invalidateQueries({ queryKey: queryKeys.viralThreads() });
+      queryClient.refetchQueries({ queryKey: queryKeys.viralThreads() });
     },
     onError: (error) => {
       const errorMessage =
@@ -22083,28 +27361,150 @@ function ViralThreadsTab({
         description: errorMessage,
         variant: "destructive",
       });
+      try {
+        setGenInProgress(false);
+        setGenError(errorMessage);
+        setShowGenError(true);
+      } catch {}
     },
   });
 
   const { data: generationStatus } = useQuery(
-    ["viralThreadStatus", (generationTask as any)?.taskId],
+    ["viralThreadStatus", activeTaskId ?? (generationTask as any)?.taskId],
     () =>
       apiClient.getViralThreadStatus({
-        taskId: (generationTask as any)!.taskId,
+        taskId: (activeTaskId ?? (generationTask as any)?.taskId)!,
       }),
     {
-      enabled: !!(generationTask as any)?.taskId,
+      enabled: !!(activeTaskId ?? (generationTask as any)?.taskId),
       refetchInterval: (data: any) =>
         data?.status === "PENDING" || data?.status === "GENERATING"
           ? 2000
           : false,
       onSuccess: (data: any) => {
         if (data.status === "COMPLETED" || data.status === "FAILED") {
-          queryClient.invalidateQueries(queryKeys.viralThreads());
+          try {
+            setGenInProgress(false);
+            if (data.status === "FAILED") {
+              setGenError(
+                data?.errorMessage || "Generation failed. Please try again.",
+              );
+              setShowGenError(true);
+              autoSavePendingRef.current = false;
+            } else {
+              setGenError(undefined);
+              setShowGenError(false);
+              if (autoSavePendingRef.current) {
+                apiClient
+                  .listViralThreads({ searchTerm: "", sortBy: "createdAt" })
+                  .then((result) => {
+                    const threads = (result as any)?.threads || [];
+                    const startMs = genStartTimeRef.current ?? 0;
+                    const recent = threads
+                      .slice()
+                      .sort(
+                        (a: any, b: any) =>
+                          new Date(b.createdAt).getTime() -
+                          new Date(a.createdAt).getTime(),
+                      )[0];
+                    if (
+                      recent &&
+                      new Date(recent.createdAt).getTime() >=
+                        startMs - 5 * 60 * 1000
+                    ) {
+                      saveThreadMutation.mutate({ threadId: recent.id });
+                    }
+                  })
+                  .catch(() => {
+                    /* ignore */
+                  })
+                  .finally(() => {
+                    autoSavePendingRef.current = false;
+                  });
+              }
+            }
+            setActiveTaskId(undefined);
+          } catch {}
+          // Ensure list refresh after generation completes
+          setShouldAutoRefresh(true);
+          setTimeout(() => setShouldAutoRefresh(false), 10000);
+          queryClient.invalidateQueries({ queryKey: queryKeys.viralThreads() });
+          queryClient.refetchQueries({ queryKey: queryKeys.viralThreads() });
         }
       },
     },
   );
+
+  useEffect(() => {
+    try {
+      const st = (generationStatus as any)?.status;
+      if (st === "COMPLETED") {
+        setShowReady(true);
+        const t = setTimeout(() => setShowReady(false), 6000);
+        return () => clearTimeout(t);
+      }
+      if (st === "FAILED") {
+        setShowReady(false);
+      }
+    } catch {}
+  }, [generationStatus]);
+
+  // Progress timeline updater for creation flow clarity
+  useEffect(() => {
+    const status = (generationStatus as any)?.status as
+      | "PENDING"
+      | "GENERATING"
+      | "COMPLETED"
+      | "FAILED"
+      | undefined;
+
+    let interval: any;
+
+    if (
+      status === "PENDING" ||
+      status === "GENERATING" ||
+      genInProgress ||
+      isGenerating
+    ) {
+      setProgress((p) => (p <= 5 ? 10 : p));
+      setProgressLabel(progress >= 75 ? "Finishing up…" : "Generating…");
+      interval = setInterval(() => {
+        setProgress((p) => {
+          const cap = 88;
+          const next = p + (p < 50 ? 4 : p < 70 ? 3 : 2);
+          return next > cap ? cap : next;
+        });
+      }, 900);
+    } else if (status === "COMPLETED") {
+      setProgress(100);
+      setProgressLabel("Ready.");
+      const t = setTimeout(() => {
+        setProgress(0);
+        setProgressLabel("");
+      }, 4500);
+      return () => clearTimeout(t);
+    } else if (status === "FAILED") {
+      setProgress(0);
+      setProgressLabel("");
+    }
+
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [generationStatus, genInProgress, isGenerating, progress]);
+
+  // Keep gentle auto-refresh active while pending/generating
+  useEffect(() => {
+    const status = (generationStatus as any)?.status as string | undefined;
+    const pending =
+      isGenerating ||
+      genInProgress ||
+      status === "PENDING" ||
+      status === "GENERATING";
+    if (pending) {
+      setShouldAutoRefresh(true);
+    }
+  }, [generationStatus, isGenerating, genInProgress]);
 
   const { data: selectedThread, isLoading: isLoadingSelectedThread } = useQuery(
     ["viralThread", selectedThreadId],
@@ -22135,6 +27535,10 @@ function ViralThreadsTab({
     : null;
 
   const handleGenerate = () => {
+    if (genInProgress) return;
+    setGenError(undefined);
+    genStartTimeRef.current = Date.now();
+    autoSavePendingRef.current = true;
     const payload: any = {
       platform: targetPlatform,
       targetAudience: targetAudience || undefined,
@@ -22146,6 +27550,14 @@ function ViralThreadsTab({
       payload.fileBase64 = fileBase64;
       payload.fileName = fileName || selectedFile?.name || "content.txt";
     }
+    // Clear filters so the new item shows up in the list
+    try {
+      setSearchTerm("");
+      setFilterByPattern("");
+      setSelectedTagIds([]);
+    } catch {}
+    setGenInProgress(true);
+    lastPayloadRef.current = payload;
     generateThread(payload);
   };
 
@@ -22161,7 +27573,7 @@ function ViralThreadsTab({
 
   return (
     <>
-      {/* Content Lab Header */}
+      {/* Creation Hub Header */}
       <motion.div
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -22170,7 +27582,7 @@ function ViralThreadsTab({
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <div>
             <h2 className="text-2xl font-bold bg-gradient-to-r from-primary to-purple-600 bg-clip-text text-transparent">
-              Generate & Repurpose
+              Create
             </h2>
             <p className="text-muted-foreground mt-1">
               On-brand thread creation and one-tap repurposing
@@ -22319,10 +27731,12 @@ function ViralThreadsTab({
                       ),
                     ) || (
                       <p className="text-sm text-muted-foreground">
-                        Loading suggestions...
+                        {smartSuggestions === undefined
+                          ? "Loading suggestions..."
+                          : "We couldn’t load suggestions right now. Try opening Insights again in a bit."}
                       </p>
                     )}
-                  </CardContent>
+                  </CardContent>{" "}
                 </Card>
                 <Card>
                   <CardHeader>
@@ -22992,8 +28406,8 @@ function ViralThreadsTab({
       )}
 
       {/* Simple View or Thread List */}
-      <div className="flex flex-col lg:grid lg:grid-cols-1 xl:grid-cols-3 gap-4 lg:gap-8">
-        <div className="xl:col-span-1 order-2 lg:order-1">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:gap-8">
+        <div className="lg:col-span-1 xl:col-span-1 order-2 lg:order-1 lg:sticky lg:top-20 self-start">
           <Card>
             <CardHeader>
               <CardTitle>Universal Input</CardTitle>
@@ -23023,6 +28437,12 @@ function ViralThreadsTab({
                     placeholder="e.g., AI automation, a YouTube/article/social post URL, or a simple idea..."
                     value={source}
                     onChange={(e) => setSource(e.target.value)}
+                    onKeyDown={(e) => {
+                      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                        e.preventDefault();
+                        handleGenerate();
+                      }
+                    }}
                     className="min-h-[120px]"
                   />
                 </div>
@@ -23052,7 +28472,6 @@ function ViralThreadsTab({
                   )}
                 </div>
               )}
-
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div>
                   <div className="flex items-center justify-between">
@@ -23145,12 +28564,12 @@ function ViralThreadsTab({
                   </select>
                 </div>
               </div>
-
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <Button
                   onClick={handleGenerate}
                   disabled={
                     isGenerating ||
+                    genInProgress ||
                     (inputMode === "TEXT" ? !source : !fileBase64)
                   }
                   className="w-full h-12"
@@ -23199,44 +28618,201 @@ function ViralThreadsTab({
                 </Button>
               </div>
               <div className="flex items-center justify-between pt-1">
-                <p className="text-xs text-muted-foreground">
-                  On-brand: Content will follow your Brand Guidelines.
-                </p>
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <span>
+                      On-brand: Content follows your Brand Guidelines and Brand
+                      Vibe.
+                    </span>
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="inline-flex items-center justify-center w-4 h-4 rounded-full border text-[10px] cursor-default">
+                            i
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <p className="max-w-[260px] text-xs">
+                            We blend your Brand Guidelines (tone, phrases,
+                            dos/don’ts) with your Brand Vibe (personality and
+                            feel) for consistent copy, images, and videos.
+                          </p>
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Tip: Press Cmd/Ctrl + Enter to generate instantly.
+                  </p>
+                </div>
                 <Button variant="link" className="h-8 px-0" asChild>
                   <a href="/settings">Edit</a>
                 </Button>
               </div>
-              {generationStatus &&
-                ((generationStatus as any).status === "PENDING" ||
-                  (generationStatus as any).status === "GENERATING") && (
-                  <div className="text-sm text-muted-foreground pt-2">
-                    <p>Status: {(generationStatus as any).status}</p>
+              {(isGenerating ||
+                (generationStatus &&
+                  ((generationStatus as any).status === "PENDING" ||
+                    (generationStatus as any).status === "GENERATING"))) && (
+                <div className="text-sm text-muted-foreground pt-2">
+                  <div className="flex items-center gap-2">
+                    <RefreshCw className="h-3 w-3 animate-spin" />
+                    <p>{progressLabel || "Generating…"}</p>
                   </div>
-                )}
+                  <Progress value={progress} className="h-1 mt-2" />
+                </div>
+              )}
             </CardContent>{" "}
           </Card>
+          {onImageGenerated && (
+            <div className="mt-4">
+              <ImageGenerationTab onImageGenerated={onImageGenerated} />
+            </div>
+          )}
+          {onVideoGenerated && (
+            <div className="mt-4">
+              <VideoGenerationTab onVideoGenerated={onVideoGenerated} />
+            </div>
+          )}
         </div>
-        <div className="xl:col-span-2 order-1 lg:order-2">
+        <div className="lg:col-span-2 xl:col-span-2 order-1 lg:order-2">
           <Card>
             <CardHeader>
               <div className="flex items-center justify-between">
                 <div>
                   <CardTitle className="flex items-center gap-2">
                     <FileText className="h-5 w-5 text-primary" />
-                    SocialWave Library
+                    Live Results
                   </CardTitle>
                   <p className="text-sm text-muted-foreground mt-1">
-                    Threads created via SocialWave (on‑brand)
+                    New threads appear here and are auto-saved under "Saved
+                    Content".
                   </p>
                 </div>
-                {threadsData && (threadsData as any).threads.length > 0 && (
-                  <Badge variant="secondary" className="text-xs">
-                    {(threadsData as any).threads.length} threads
-                  </Badge>
-                )}
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8"
+                    disabled={isLoadingThreads || isRefreshing}
+                    onClick={() => {
+                      try {
+                        setIsRefreshing(true);
+                        void queryClient
+                          .invalidateQueries({
+                            queryKey: queryKeys.viralThreads(),
+                          })
+                          .finally(() => setIsRefreshing(false));
+                      } catch {
+                        setIsRefreshing(false);
+                      }
+                    }}
+                  >
+                    {isRefreshing ? (
+                      <RefreshCw className="h-4 w-4 mr-1 animate-spin" />
+                    ) : (
+                      <RefreshCw className="h-4 w-4 mr-1" />
+                    )}
+                    Refresh
+                  </Button>
+                  {threadsData && (threadsData as any).threads.length > 0 && (
+                    <Badge variant="secondary" className="text-xs">
+                      {(threadsData as any).threads.length} threads
+                    </Badge>
+                  )}
+                </div>
               </div>
             </CardHeader>
-            <CardContent>
+            <CardContent ref={libraryRef}>
+              {(genInProgress ||
+                (generationStatus &&
+                  ((generationStatus as any).status === "PENDING" ||
+                    (generationStatus as any).status === "GENERATING"))) && (
+                <div className="p-3 md:p-4 rounded-md border bg-muted/30 mb-2">
+                  <div className="flex items-center gap-2 text-sm">
+                    <RefreshCw className="h-4 w-4 animate-spin" />
+                    <Badge
+                      variant={
+                        getStatusMeta(
+                          (generationStatus as any)?.status ??
+                            (genInProgress ? "PENDING" : undefined),
+                        ).variant as any
+                      }
+                    >
+                      {
+                        getStatusMeta(
+                          (generationStatus as any)?.status ??
+                            (genInProgress ? "PENDING" : undefined),
+                        ).label
+                      }
+                    </Badge>
+                    <span>
+                      Generating your thread… It will appear here shortly.
+                    </span>
+                    <div className="ml-auto flex items-center gap-2">
+                      {genStartTimeRef.current &&
+                        Date.now() - genStartTimeRef.current > 60000 && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-8"
+                            onClick={() => {
+                              setGenInProgress(false);
+                              setActiveTaskId(undefined);
+                              queryClient.invalidateQueries({
+                                queryKey: queryKeys.viralThreads(),
+                              });
+                            }}
+                          >
+                            Stuck? Try refresh
+                          </Button>
+                        )}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8"
+                        onClick={() => {
+                          setGenInProgress(false);
+                          setActiveTaskId(undefined);
+                          setShouldAutoRefresh(false);
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                    </div>{" "}
+                  </div>
+                </div>
+              )}
+              {showReady && (
+                <div className="p-3 md:p-4 rounded-md border bg-green-500/10 text-sm mb-2">
+                  <div className="flex items-center gap-2">
+                    <Badge className="bg-green-600 text-white">Ready</Badge>
+                    <span>Your thread is ready in Live Results.</span>
+                  </div>
+                </div>
+              )}
+              {showGenError && genError && (
+                <div className="p-3 md:p-4 rounded-md border border-destructive/40 bg-destructive/10 text-destructive mb-2 text-sm flex items-center justify-between gap-2">
+                  <span>{genError}</span>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => {
+                        try {
+                          if (lastPayloadRef.current) {
+                            setShowGenError(false);
+                            setGenInProgress(true);
+                            generateThread(lastPayloadRef.current);
+                          }
+                        } catch {}
+                      }}
+                      className="h-7"
+                    >
+                      Retry
+                    </Button>
+                  </div>
+                </div>
+              )}
               <div className="space-y-3 md:space-y-4 mb-4">
                 <Input
                   placeholder="Search threads..."
@@ -23315,7 +28891,11 @@ function ViralThreadsTab({
                 <LoadingSpinner />
               ) : threadsData && (threadsData as any).threads.length > 0 ? (
                 <div className="space-y-4">
-                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between p-3 border-b gap-3">
+                  <div
+                    className="flex flex-col sm:flex-row items-start sm:items-center justify-between p-3 border-b gap-3"
+                    id="live-results-toolbar"
+                  >
+                    {" "}
                     <div className="flex items-center gap-2">
                       <Checkbox
                         id="select-all-threads"
@@ -23362,6 +28942,51 @@ function ViralThreadsTab({
                     )}
                   </div>
                   <div className="max-h-[550px] overflow-y-auto space-y-4">
+                    {(isGenerating ||
+                      genInProgress ||
+                      (generationStatus as any)?.status === "PENDING" ||
+                      (generationStatus as any)?.status === "GENERATING" ||
+                      showReady) && (
+                      <Card
+                        key="pending-placeholder"
+                        className={`border-2 ${showReady ? "border-green-500 bg-green-500/10" : "border-primary/60 bg-primary/5"} animate-in fade-in-50`}
+                      >
+                        <CardContent className="p-4">
+                          <div className="flex items-center gap-2">
+                            <Badge
+                              variant={
+                                getStatusMeta(
+                                  (generationStatus as any)?.status ??
+                                    (genInProgress ? "PENDING" : undefined),
+                                ).variant as any
+                              }
+                            >
+                              {showReady
+                                ? "Ready"
+                                : getStatusMeta(
+                                    (generationStatus as any)?.status ??
+                                      (genInProgress ? "PENDING" : undefined),
+                                  ).label}
+                            </Badge>
+                            <span className="text-sm">
+                              {showReady
+                                ? "Your thread is ready."
+                                : progressLabel || "Generating…"}
+                            </span>
+                          </div>
+                          {!showReady && (
+                            <Progress value={progress} className="h-1 mt-2" />
+                          )}
+                          {!showReady && (
+                            <div className="mt-3 space-y-2">
+                              <Skeleton className="h-4 w-3/4" />
+                              <Skeleton className="h-3 w-full" />
+                              <Skeleton className="h-3 w-5/6" />
+                            </div>
+                          )}
+                        </CardContent>
+                      </Card>
+                    )}
                     {(threadsData as any).threads.map((thread: any) => (
                       <div
                         key={thread.id}
@@ -23382,6 +29007,7 @@ function ViralThreadsTab({
                         </div>
                         <Card
                           className={`flex-grow cursor-pointer transition-all duration-300 group relative overflow-hidden border-2 hover:shadow-lg hover:scale-[1.01] ${selectedThreadId === thread.id ? "bg-gradient-to-r from-primary/5 to-primary/10 border-primary shadow-lg scale-[1.01]" : "border-border/50 hover:border-primary/40 hover:bg-gradient-to-r hover:from-secondary/30 hover:to-secondary/10"}`}
+                          id={`thread-card-${thread.id}`}
                           onClick={() => setSelectedThreadId(thread.id)}
                         >
                           <CardContent className="p-4">
@@ -23389,9 +29015,14 @@ function ViralThreadsTab({
                               <div className="flex-1 min-w-0">
                                 <div className="flex items-center gap-2">
                                   <p className="font-semibold text-sm sm:text-base break-words">
-                                    {thread.title}
+                                    {stripMd(thread.title || "")}
                                   </p>
-                                  <ChevronRight className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors flex-shrink-0" />
+                                  {thread.id === latestNewThreadId && (
+                                    <Badge className="bg-green-600 text-white">
+                                      New
+                                    </Badge>
+                                  )}
+                                  <ChevronRight className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors flex-shrink-0" />{" "}
                                 </div>
                               </div>
                               {typeof thread.engagementScore === "number" && (
@@ -23416,7 +29047,7 @@ function ViralThreadsTab({
                               )}
                             </div>
                             <p className="text-sm text-muted-foreground whitespace-pre-wrap mt-2 line-clamp-2">
-                              {thread.tweets[0]?.content}
+                              {stripMd(thread.tweets[0]?.content || "")}
                             </p>
                             <div className="mt-3 flex items-center justify-between">
                               <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -23441,6 +29072,10 @@ function ViralThreadsTab({
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     setSelectedThreadId(thread.id);
+                                    setRepurposeState((prev) => ({
+                                      ...prev,
+                                      threadId: thread.id,
+                                    }));
                                     repurposeMutation.mutate({
                                       threadId: thread.id,
                                       platform: "linkedin",
@@ -23456,6 +29091,10 @@ function ViralThreadsTab({
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     setSelectedThreadId(thread.id);
+                                    setRepurposeState((prev) => ({
+                                      ...prev,
+                                      threadId: thread.id,
+                                    }));
                                     repurposeMutation.mutate({
                                       threadId: thread.id,
                                       platform: "instagram",
@@ -23471,6 +29110,10 @@ function ViralThreadsTab({
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     setSelectedThreadId(thread.id);
+                                    setRepurposeState((prev) => ({
+                                      ...prev,
+                                      threadId: thread.id,
+                                    }));
                                     repurposeMutation.mutate({
                                       threadId: thread.id,
                                       platform: "tiktok",
@@ -23488,6 +29131,7 @@ function ViralThreadsTab({
                                     setRepurposeState((prev) => ({
                                       ...prev,
                                       thread,
+                                      threadId: thread.id,
                                       isDialogOpen: true,
                                     }));
                                   }}
@@ -23497,7 +29141,299 @@ function ViralThreadsTab({
                               </div>{" "}
                             </div>
                           </CardContent>
+                          {selectedThreadId === thread.id && (
+                            <div className="mt-3 border-t pt-3 rounded-md bg-muted/20">
+                              {inlineConfirm && (
+                                <div className="mb-2 p-2 rounded-md border bg-muted/30 text-sm">
+                                  {inlineConfirm}
+                                </div>
+                              )}
+                              {isLoadingSelectedThread ? (
+                                <div className="p-4 text-sm text-muted-foreground">
+                                  Loading thread...
+                                </div>
+                              ) : !selectedThread ? (
+                                <div className="p-4 text-destructive text-sm">
+                                  Could not load thread details.
+                                </div>
+                              ) : (
+                                <>
+                                  <div className="sticky top-0 z-10 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 border-b mb-2 p-2 rounded-t-md flex items-center justify-between">
+                                    <div className="flex items-center gap-2">
+                                      <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        className="h-8 px-2"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setSelectedThreadId(null);
+                                        }}
+                                      >
+                                        Back to threads
+                                      </Button>
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-8 px-2"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          try {
+                                            const plain = (
+                                              (selectedThread.title
+                                                ? stripMd(
+                                                    selectedThread.title,
+                                                  ) + "\n\n"
+                                                : "") +
+                                              (selectedThread.tweets || [])
+                                                .map(
+                                                  (t: any, i: number) =>
+                                                    `${i + 1}. ${stripMd(t.content || "")}`,
+                                                )
+                                                .join("\n\n")
+                                            ).trim();
+                                            copy(plain);
+                                            toast({
+                                              title: "Copied to clipboard",
+                                            });
+                                          } catch {}
+                                        }}
+                                        aria-label="Copy thread"
+                                      >
+                                        📋
+                                      </Button>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setRepurposeState((prev) => ({
+                                            ...prev,
+                                            thread: selectedThread,
+                                            threadId: selectedThread.id,
+                                            isDialogOpen: true,
+                                          }));
+                                        }}
+                                        disabled={repurposeMutation.isLoading}
+                                      >
+                                        Repurpose
+                                      </Button>
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          if (!selectedThreadId) {
+                                            toast({
+                                              title: "Select a thread to save",
+                                              description:
+                                                "Tap a thread, then try again.",
+                                            });
+                                            return;
+                                          }
+                                          saveThreadMutation.mutate({
+                                            threadId: selectedThreadId!,
+                                          });
+                                        }}
+                                        disabled={
+                                          !selectedThreadId ||
+                                          saveThreadMutation.isLoading ||
+                                          !!inlineConfirm
+                                        }
+                                      >
+                                        {saveThreadMutation.isLoading ? (
+                                          <>
+                                            <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                                            Saving…
+                                          </>
+                                        ) : !!inlineConfirm ? (
+                                          <>
+                                            <Check className="h-4 w-4 mr-2 text-green-600" />
+                                            Saved
+                                          </>
+                                        ) : (
+                                          <>
+                                            <Download className="h-4 w-4 mr-2" />
+                                            Save to Library
+                                          </>
+                                        )}{" "}
+                                      </Button>
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={async (e) => {
+                                          e.stopPropagation();
+                                          try {
+                                            const res =
+                                              await apiClient.shareViralThread({
+                                                threadId: selectedThreadId!,
+                                              });
+                                            const url =
+                                              (res as any)?.url ??
+                                              new URL(
+                                                `/share/thread/${(res as any)?.shareId}`,
+                                                window.location.origin,
+                                              ).toString();
+                                            copy(url);
+                                            setInlineConfirm(
+                                              <div className="flex items-center gap-2">
+                                                <Check className="h-4 w-4 text-green-600" />
+                                                <span>Link copied</span>
+                                                <Button
+                                                  variant="link"
+                                                  size="sm"
+                                                  className="h-6 px-1"
+                                                  onClick={(ev) => {
+                                                    ev.stopPropagation();
+                                                    window.open(url, "_blank");
+                                                  }}
+                                                >
+                                                  Open
+                                                </Button>
+                                              </div>,
+                                            );
+                                            try {
+                                              if (
+                                                typeof navigator !==
+                                                  "undefined" &&
+                                                (navigator as any).share
+                                              ) {
+                                                await (navigator as any).share({
+                                                  title:
+                                                    (selectedThread as any)
+                                                      ?.title ||
+                                                    "Check this thread",
+                                                  text:
+                                                    (selectedThread as any)
+                                                      ?.title || undefined,
+                                                  url,
+                                                });
+                                              }
+                                            } catch {
+                                              // ignore
+                                            }
+                                            toast({
+                                              title: "Share link copied!",
+                                            });
+                                          } catch (error: any) {
+                                            toast({
+                                              title:
+                                                "Failed to create share link",
+                                              description:
+                                                error?.message ||
+                                                "Please try again.",
+                                              variant: "destructive",
+                                            });
+                                          }
+                                        }}
+                                      >
+                                        Share
+                                      </Button>
+                                      <Button
+                                        size="sm"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setSchedulingThread(selectedThread);
+                                        }}
+                                      >
+                                        Publish
+                                      </Button>
+                                    </div>
+                                  </div>
+                                  {/* Inline preview for Repurpose results */}
+                                  {repurposeState.taskId &&
+                                    (repurposeState.threadId ===
+                                      selectedThreadId ||
+                                      repurposeState.thread?.id ===
+                                        selectedThreadId) && (
+                                      <div className="mb-3 p-3 rounded-md border bg-muted/30">
+                                        <div className="flex items-center gap-2 text-sm">
+                                          {(repurposeStatus as any)?.status ===
+                                          "COMPLETED" ? (
+                                            <Check className="h-4 w-4 text-green-600" />
+                                          ) : (
+                                            <RefreshCw className="h-4 w-4 animate-spin" />
+                                          )}
+                                          <Badge
+                                            variant={
+                                              (() => {
+                                                const st = (
+                                                  repurposeStatus as any
+                                                )?.status;
+                                                return st === "COMPLETED"
+                                                  ? "default"
+                                                  : st === "FAILED"
+                                                    ? "destructive"
+                                                    : "secondary";
+                                              })() as any
+                                            }
+                                          >
+                                            {(repurposeStatus as any)?.status ??
+                                              "GENERATING"}
+                                          </Badge>
+                                          <span>
+                                            Repurposing for{" "}
+                                            {repurposeState.platform ?? "…"}
+                                          </span>
+                                        </div>
+                                        {(repurposeStatus as any)?.result && (
+                                          <div className="mt-2 text-sm whitespace-pre-wrap bg-background border rounded p-2 max-h-48 overflow-auto">
+                                            {typeof (repurposeStatus as any)
+                                              .result === "string"
+                                              ? stripMd(
+                                                  (repurposeStatus as any)
+                                                    .result as string,
+                                                )
+                                              : JSON.stringify(
+                                                  (repurposeStatus as any)
+                                                    .result,
+                                                  null,
+                                                  2,
+                                                )}
+                                          </div>
+                                        )}
+                                        {(repurposeStatus as any)?.status ===
+                                          "COMPLETED" &&
+                                          (repurposeStatus as any)
+                                            ?.newContentId && (
+                                            <div className="mt-2">
+                                              <Button
+                                                variant="link"
+                                                size="sm"
+                                                className="h-6 px-1"
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  onContentGenerated(
+                                                    (repurposeStatus as any)
+                                                      .newContentId as string,
+                                                  );
+                                                }}
+                                              >
+                                                View in Library
+                                              </Button>
+                                            </div>
+                                          )}
+                                      </div>
+                                    )}
+                                  <ol className="list-decimal list-inside space-y-3 text-sm">
+                                    {selectedThread.tweets.map(
+                                      (t: any, i: number) => (
+                                        <li
+                                          key={i}
+                                          className="p-3 bg-background rounded border whitespace-pre-wrap leading-relaxed"
+                                        >
+                                          {stripMd(t.content || "")}
+                                        </li>
+                                      ),
+                                    )}
+                                  </ol>
+                                </>
+                              )}
+                            </div>
+                          )}
                           <TooltipProvider>
+                            {" "}
                             <Tooltip>
                               <TooltipTrigger asChild>
                                 <Button
@@ -23542,7 +29478,7 @@ function ViralThreadsTab({
             </CardContent>
           </Card>
 
-          {selectedThreadId && (
+          {selectedThreadId && !inlineDetailEnabled && (
             <Card className="mt-4">
               {isLoadingSelectedThread ? (
                 <CardContent className="p-6 text-center">
@@ -23561,8 +29497,97 @@ function ViralThreadsTab({
                 <>
                   <CardHeader>
                     <div className="flex justify-between items-start">
-                      <CardTitle className="text-lg">
+                      <CardTitle className="text-lg flex items-center gap-2">
                         {selectedThread.title}
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-6 w-6 flex-shrink-0"
+                              aria-label="How this applies your Brand Voice"
+                            >
+                              <Info className="h-4 w-4 text-muted-foreground" />
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent
+                            side="bottom"
+                            align="start"
+                            className="max-w-xs text-xs leading-relaxed"
+                          >
+                            <div className="space-y-1">
+                              <p className="font-medium">
+                                How this applies your Brand Voice
+                              </p>
+                              {brandGuidelines ? (
+                                <>
+                                  <p>
+                                    Voice:{" "}
+                                    <span className="font-medium">
+                                      {brandGuidelines.brandVoice || "—"}
+                                    </span>
+                                  </p>
+                                  {Array.isArray(
+                                    brandGuidelines.tonePriorities,
+                                  ) &&
+                                    brandGuidelines.tonePriorities.length >
+                                      0 && (
+                                      <p>
+                                        Tone:{" "}
+                                        <span className="font-medium">
+                                          {(
+                                            brandGuidelines.tonePriorities as any[]
+                                          )
+                                            .slice(0, 2)
+                                            .join(", ")}
+                                        </span>
+                                      </p>
+                                    )}
+                                  {Array.isArray(
+                                    brandGuidelines.phrasesToUse,
+                                  ) &&
+                                    brandGuidelines.phrasesToUse.length > 0 && (
+                                      <p>
+                                        Uses:{" "}
+                                        <span className="font-medium">
+                                          {(
+                                            brandGuidelines.phrasesToUse as any[]
+                                          )
+                                            .slice(0, 2)
+                                            .join(", ")}
+                                        </span>
+                                      </p>
+                                    )}
+                                  {Array.isArray(
+                                    brandGuidelines.phrasesToAvoid,
+                                  ) &&
+                                    brandGuidelines.phrasesToAvoid.length >
+                                      0 && (
+                                      <p>
+                                        Avoids:{" "}
+                                        <span className="font-medium">
+                                          {(
+                                            brandGuidelines.phrasesToAvoid as any[]
+                                          )
+                                            .slice(0, 2)
+                                            .join(", ")}
+                                        </span>
+                                      </p>
+                                    )}
+                                  <p className="text-muted-foreground">
+                                    Enforced: no emojis, simple punctuation, no
+                                    AI mentions, concise sentences.
+                                  </p>
+                                </>
+                              ) : (
+                                <p>
+                                  Complete Brand Vibe in Settings to apply your
+                                  voice and tone consistently.
+                                </p>
+                              )}
+                            </div>
+                          </PopoverContent>
+                        </Popover>
                       </CardTitle>
                       <div className="flex items-center gap-2">
                         {selectedThreadId && !isEditing && (
@@ -23629,6 +29654,7 @@ function ViralThreadsTab({
                               setRepurposeState((prev) => ({
                                 ...prev,
                                 thread: selectedThread,
+                                threadId: selectedThread.id,
                                 isDialogOpen: true,
                               }))
                             }
@@ -23646,19 +29672,40 @@ function ViralThreadsTab({
                           <Button
                             variant="outline"
                             size="sm"
-                            onClick={() =>
+                            onClick={() => {
+                              if (!selectedThreadId) {
+                                toast({
+                                  title: "Select a thread to save",
+                                  description: "Tap a thread, then try again.",
+                                });
+                                return;
+                              }
                               saveThreadMutation.mutate({
-                                threadId: selectedThreadId,
-                              })
+                                threadId: selectedThreadId!,
+                              });
+                            }}
+                            disabled={
+                              !selectedThreadId ||
+                              saveThreadMutation.isLoading ||
+                              !!inlineConfirm
                             }
-                            disabled={saveThreadMutation.isLoading}
                           >
                             {saveThreadMutation.isLoading ? (
-                              <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                              <>
+                                <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                                Saving…
+                              </>
+                            ) : !!inlineConfirm ? (
+                              <>
+                                <Check className="h-4 w-4 mr-2 text-green-600" />
+                                Saved
+                              </>
                             ) : (
-                              <Download className="h-4 w-4 mr-2" />
+                              <>
+                                <Download className="h-4 w-4 mr-2" />
+                                Save to Library
+                              </>
                             )}
-                            Save to Library
                           </Button>
                         )}
                         {!isEditing && selectedThread && (
@@ -23713,11 +29760,41 @@ function ViralThreadsTab({
                                     window.location.origin,
                                   ).toString();
                                 copy(url);
-                                copy(
-                                  ((selectedThread as any)?.title
-                                    ? `${(selectedThread as any).title}\n`
-                                    : "") + url,
+                                setInlineConfirm(
+                                  <div className="flex items-center gap-2">
+                                    <Check className="h-4 w-4 text-green-600" />
+                                    <span>Link copied</span>
+                                    <Button
+                                      variant="link"
+                                      size="sm"
+                                      className="h-6 px-1"
+                                      onClick={(ev) => {
+                                        ev.stopPropagation();
+                                        window.open(url, "_blank");
+                                      }}
+                                    >
+                                      Open
+                                    </Button>
+                                  </div>,
                                 );
+                                try {
+                                  if (
+                                    typeof navigator !== "undefined" &&
+                                    (navigator as any).share
+                                  ) {
+                                    await (navigator as any).share({
+                                      title:
+                                        (selectedThread as any)?.title ||
+                                        "Check this thread",
+                                      text:
+                                        (selectedThread as any)?.title ||
+                                        undefined,
+                                      url,
+                                    });
+                                  }
+                                } catch {
+                                  // ignore
+                                }
                                 toast({ title: "Share link copied!" });
                               } catch (error: any) {
                                 toast({
@@ -23843,17 +29920,37 @@ function ViralThreadsTab({
                       </div>
                     ) : (
                       <div>
-                        <div className="space-y-3">
+                        <div className="space-y-4">
+                          <div className="flex items-center justify-between">
+                            <h4 className="text-md font-semibold">
+                              Thread Content
+                            </h4>
+                            <div className="flex items-center gap-2">
+                              <Label
+                                htmlFor="numbered-view"
+                                className="text-xs text-muted-foreground"
+                              >
+                                Numbered steps
+                              </Label>
+                              <Switch
+                                id="numbered-view"
+                                checked={numberedView}
+                                onCheckedChange={setNumberedView}
+                              />
+                            </div>
+                          </div>
                           {selectedThread.tweets.map(
                             (tweet: any, index: number) => (
                               <div
                                 key={index}
                                 className="p-4 bg-muted/50 rounded-lg border border-border/50 flex items-start gap-3"
                               >
-                                <Avatar className="h-8 w-8 mt-1">
-                                  <AvatarFallback>{index + 1}</AvatarFallback>
-                                </Avatar>
-                                <p className="flex-1 whitespace-pre-wrap text-sm break-all">
+                                {numberedView && (
+                                  <Avatar className="h-8 w-8 mt-1">
+                                    <AvatarFallback>{index + 1}</AvatarFallback>
+                                  </Avatar>
+                                )}
+                                <p className="flex-1 whitespace-pre-wrap text-sm break-all leading-relaxed">
                                   {tweet.content}
                                 </p>
                               </div>
@@ -23979,7 +30076,7 @@ function ViralThreadsTab({
               thread: null,
             }))
           }
-          threadId={repurposeState.thread.id}
+          threadId={repurposeState.threadId ?? repurposeState.thread?.id}
           onRepurpose={(input) => {
             repurposeMutation.mutate({
               threadId: input.threadId,
@@ -24012,7 +30109,7 @@ function CreatePage() {
   const [activeTab, setActiveTab] = useState(
     location.state?.activeTab === "image" ||
       location.state?.activeTab === "video"
-      ? "media"
+      ? "viralThreads"
       : location.state?.activeTab || "generatedContent",
   );
   const [highlightedPillar, setHighlightedPillar] = useState<string | null>(
@@ -24037,19 +30134,42 @@ function CreatePage() {
   // Pull to refresh functionality for mobile
   usePullToRefresh(handleRefresh);
 
-  const handleImageGenerated = (pillarId: string) => {
+  // Auto-open inline preview when arriving from other pages
+  useEffect(() => {
+    const state = (location as any).state;
+    if (state && state.inlinePreviewContentId) {
+      setActiveTab("generatedContent");
+      setHighlightedPillar(null);
+      setInlinePreviewContentId(state.inlinePreviewContentId as string);
+      void queryClient.invalidateQueries({ queryKey: ["generatedContent"] });
+      void queryClient.invalidateQueries({ queryKey: ["contentPillars"] });
+    }
+  }, [location.state, queryClient]);
+
+  const handleImageGenerated = (pillarId: string, contentId: string) => {
     setActiveTab("generatedContent");
     setHighlightedPillar(pillarId);
+    setInlinePreviewContentId(contentId);
+    void queryClient.invalidateQueries({ queryKey: ["generatedContent"] });
+    void queryClient.invalidateQueries({ queryKey: ["contentPillars"] });
   };
 
-  const handleVideoGenerated = () => {
+  const handleVideoGenerated = (contentId: string) => {
     setActiveTab("generatedContent");
     setHighlightedPillar(null);
+    setInlinePreviewContentId(contentId);
+    void queryClient.invalidateQueries({ queryKey: ["generatedContent"] });
+    void queryClient.invalidateQueries({ queryKey: ["contentPillars"] });
   };
 
-  const handleContentGenerated = () => {
+  const handleContentGenerated = (contentId?: string) => {
     setActiveTab("generatedContent");
     setHighlightedPillar(null); // Don't highlight any specific pillar
+    if (contentId) {
+      setInlinePreviewContentId(contentId);
+    }
+    void queryClient.invalidateQueries({ queryKey: ["generatedContent"] });
+    void queryClient.invalidateQueries({ queryKey: ["contentPillars"] });
   };
 
   // Keyboard shortcuts for preview
@@ -24087,15 +30207,15 @@ function CreatePage() {
         <h1 className="text-3xl font-bold gradient-text">Create</h1>
       </div>
       <p className="text-muted-foreground text-lg mb-8">
-        Generate content ideas, captions, and images tailored to your brand.
+        Generate ideas, captions, and images tailored to your full Brand Vibe
+        (voice, personas, creative guardrails).
       </p>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="mb-8">
         <TabsList className="flex flex-wrap h-auto justify-start">
-          <TabsTrigger value="generatedContent">Generated Content</TabsTrigger>
-          <TabsTrigger value="viralThreads">Generate & Repurpose</TabsTrigger>
-          <TabsTrigger value="media">Media Studio</TabsTrigger>
-        </TabsList>
+          <TabsTrigger value="viralThreads">Creation Hub</TabsTrigger>
+          <TabsTrigger value="generatedContent">Saved Content</TabsTrigger>
+        </TabsList>{" "}
       </Tabs>
 
       {activeTab === "generatedContent" && (
@@ -24105,21 +30225,27 @@ function CreatePage() {
           onPreviewClose={() => setInlinePreviewContentId(null)}
         />
       )}
-      {activeTab === "media" && (
-        <div className="space-y-8">
-          <ImageGenerationTab onImageGenerated={handleImageGenerated} />
-          <VideoGenerationTab onVideoGenerated={handleVideoGenerated} />
-        </div>
-      )}
 
       {activeTab === "viralThreads" && (
-        <ViralThreadsTab onContentGenerated={handleContentGenerated} />
+        <ViralThreadsTab
+          onContentGenerated={handleContentGenerated}
+          onImageGenerated={handleImageGenerated}
+          onVideoGenerated={handleVideoGenerated}
+        />
       )}
 
       {/* Enhanced Content Preview */}
       {previewContentId && (
-        <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-background border border-border rounded-none sm:rounded-lg shadow-2xl w-full max-w-full sm:max-w-4xl h-[90vh] sm:h-auto overflow-auto">
+        <div
+          className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setPreviewContentId(null)}
+        >
+          <div
+            className="bg-background border border-border rounded-none sm:rounded-lg shadow-2xl w-full max-w-full sm:max-w-4xl h-[90vh] sm:h-auto overflow-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
             <InlineContentPreview
               contentId={previewContentId}
               onClose={() => setPreviewContentId(null)}
@@ -24140,6 +30266,7 @@ function GeneratedContentCard({ item }: { item: GeneratedContent }) {
   const [isScheduling, setIsScheduling] = useState(false);
   const [isPressed, setIsPressed] = useState(false);
   const [showContextMenu, setShowContextMenu] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [showClean, setShowClean] = useState(true);
   const cleanedText = React.useMemo(() => {
     const lines = (item.content ?? "").split(/\r?\n/);
@@ -24158,6 +30285,26 @@ function GeneratedContentCard({ item }: { item: GeneratedContent }) {
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const isDesktop = useMediaQuery("(min-width: 768px)");
+  const { brandGuidelines } = useBrandContext();
+  const parsedPackage = React.useMemo(() => {
+    try {
+      return JSON.parse(item.content) as any;
+    } catch {
+      return null as any;
+    }
+  }, [item.content]);
+  const isVideoScriptPackage = React.useMemo(() => {
+    const p = parsedPackage;
+    if (!p || typeof p !== "object") return false;
+    return (
+      Array.isArray(p?.scenes) ||
+      Array.isArray(p?.shots) ||
+      Array.isArray(p?.videoScript?.scenes) ||
+      !!p?.videoScript ||
+      !!p?.script
+    );
+  }, [parsedPackage]);
+  const displayType: string = isVideoScriptPackage ? "VIDEO SCRIPT" : item.type;
 
   // Long press for context menu on mobile
   const handleLongPress = useCallback(() => {
@@ -24231,16 +30378,57 @@ function GeneratedContentCard({ item }: { item: GeneratedContent }) {
 
   const deleteMutation = useMutation({
     mutationFn: apiClient.deleteGeneratedContent,
+    onMutate: async (variables: { contentId: string }) => {
+      await queryClient.cancelQueries({
+        queryKey: queryKeys.generatedContent(item.pillarId),
+      });
+      const previous = queryClient.getQueryData<any[]>(
+        queryKeys.generatedContent(item.pillarId),
+      );
+      queryClient.setQueryData<any[]>(
+        queryKeys.generatedContent(item.pillarId),
+        (old) => (old ?? []).filter((c: any) => c.id !== variables.contentId),
+      );
+      return { previous } as { previous?: any[] };
+    },
+    onError: (error: Error, _vars, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(
+          queryKeys.generatedContent(item.pillarId),
+          context.previous,
+        );
+      }
+      toast({
+        title: "Failed to delete content",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
     onSuccess: () => {
       toast({ title: "Content deleted" });
+    },
+    onSettled: () => {
       queryClient.invalidateQueries({
         queryKey: queryKeys.generatedContent(item.pillarId),
       });
     },
-    onError: (error: Error) => {
+  });
+
+  const generateMoreMutation = useMutation(apiClient.generateMoreVariants, {
+    onSuccess: (res: any) => {
       toast({
-        title: "Failed to delete content",
-        description: error.message,
+        title: "Generated more options",
+        description: `${res?.count ?? 0} new variants added.`,
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.generatedContent(item.pillarId),
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Couldn't generate more",
+        description:
+          error instanceof Error ? error.message : "Please try again.",
         variant: "destructive",
       });
     },
@@ -24249,7 +30437,7 @@ function GeneratedContentCard({ item }: { item: GeneratedContent }) {
   const retryMutation = useMutation({
     mutationFn: apiClient.retryVideoGeneration,
     onSuccess: () => {
-      toast({ title: "Retrying video generation..." });
+      toast({ title: "Retrying video generation..." }); // Will be hidden for scripts
       queryClient.invalidateQueries({
         queryKey: queryKeys.generatedContent(item.pillarId),
       });
@@ -24320,6 +30508,59 @@ function GeneratedContentCard({ item }: { item: GeneratedContent }) {
             <span className="text-sm md:text-base">
               Content is being generated...
             </span>
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6"
+                  aria-label="Why this captures your Brand Vibe"
+                >
+                  <Info className="h-4 w-4" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent
+                side="bottom"
+                align="start"
+                className="max-w-xs text-xs leading-relaxed"
+              >
+                <div className="space-y-1">
+                  <p className="font-medium">
+                    Why this captures your Brand Vibe
+                  </p>
+                  {brandGuidelines ? (
+                    <>
+                      <p>
+                        Voice:{" "}
+                        <span className="font-medium">
+                          {brandGuidelines.brandVoice || "—"}
+                        </span>
+                      </p>
+                      {Array.isArray(brandGuidelines.tonePriorities) &&
+                        brandGuidelines.tonePriorities.length > 0 && (
+                          <p>
+                            Tone:{" "}
+                            <span className="font-medium">
+                              {(brandGuidelines.tonePriorities as any[])
+                                .slice(0, 2)
+                                .join(", ")}
+                            </span>
+                          </p>
+                        )}
+                      <p className="text-muted-foreground">
+                        Generation follows your rules. Enforced: no emojis,
+                        simple punctuation, no AI mentions, concise sentences.
+                      </p>
+                    </>
+                  ) : (
+                    <p>
+                      Finish Brand Vibe setup in Settings to apply your voice
+                      and tone.
+                    </p>
+                  )}
+                </div>
+              </PopoverContent>
+            </Popover>
           </div>
           <Skeleton className="h-16 md:h-20 w-full mt-2" />
         </CardContent>
@@ -24354,7 +30595,7 @@ function GeneratedContentCard({ item }: { item: GeneratedContent }) {
               variant="destructive"
               onClick={() => retryMutation.mutate({ contentId: item.id })}
               disabled={retryMutation.isLoading}
-              className="w-full md:w-auto min-h-[44px] md:min-h-auto transition-all duration-200 active:scale-95"
+              className="hidden w-full md:w-auto min-h-[44px] md:min-h-auto transition-all duration-200 active:scale-95"
             >
               <RefreshCw className="h-4 w-4 mr-2" />
               Retry
@@ -24414,8 +30655,11 @@ function GeneratedContentCard({ item }: { item: GeneratedContent }) {
                 variant="outline"
                 className="w-fit text-xs px-2 py-1 flex-shrink-0"
               >
-                {item.type}
+                {displayType}
               </Badge>
+              <span className="text-[11px] text-muted-foreground">
+                {formatDate(item.createdAt)}
+              </span>
               <TooltipProvider>
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -24438,6 +30682,82 @@ function GeneratedContentCard({ item }: { item: GeneratedContent }) {
                   </TooltipContent>
                 </Tooltip>
               </TooltipProvider>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6 flex-shrink-0"
+                    aria-label="Why this captures your Brand Vibe"
+                  >
+                    <Info className="h-4 w-4 text-muted-foreground" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent
+                  side="bottom"
+                  align="end"
+                  className="max-w-xs text-xs leading-relaxed"
+                >
+                  <div className="space-y-1">
+                    <p className="font-medium">
+                      Why this captures your Brand Vibe
+                    </p>
+                    {brandGuidelines ? (
+                      <>
+                        <p>
+                          Voice:{" "}
+                          <span className="font-medium">
+                            {brandGuidelines.brandVoice || "—"}
+                          </span>
+                        </p>
+                        {Array.isArray(brandGuidelines.tonePriorities) &&
+                          brandGuidelines.tonePriorities.length > 0 && (
+                            <p>
+                              Tone:{" "}
+                              <span className="font-medium">
+                                {(brandGuidelines.tonePriorities as any[])
+                                  .slice(0, 2)
+                                  .join(", ")}
+                              </span>
+                            </p>
+                          )}
+                        {Array.isArray(brandGuidelines.phrasesToUse) &&
+                          brandGuidelines.phrasesToUse.length > 0 && (
+                            <p>
+                              Uses:{" "}
+                              <span className="font-medium">
+                                {(brandGuidelines.phrasesToUse as any[])
+                                  .slice(0, 2)
+                                  .join(", ")}
+                              </span>
+                            </p>
+                          )}
+                        {Array.isArray(brandGuidelines.phrasesToAvoid) &&
+                          brandGuidelines.phrasesToAvoid.length > 0 && (
+                            <p>
+                              Avoids:{" "}
+                              <span className="font-medium">
+                                {(brandGuidelines.phrasesToAvoid as any[])
+                                  .slice(0, 2)
+                                  .join(", ")}
+                              </span>
+                            </p>
+                          )}
+                        <p className="text-muted-foreground">
+                          Content was adjusted to match these rules. Enforced:
+                          no emojis, simple punctuation, no AI mentions, concise
+                          sentences.
+                        </p>
+                      </>
+                    ) : (
+                      <p>
+                        Complete Brand Vibe in Settings to apply your voice and
+                        tone consistently.
+                      </p>
+                    )}
+                  </div>
+                </PopoverContent>
+              </Popover>
             </div>
           </div>
         </CardHeader>
@@ -24528,6 +30848,253 @@ function GeneratedContentCard({ item }: { item: GeneratedContent }) {
               // Try to parse as comprehensive content package first
               try {
                 const contentPackage = JSON.parse(item.content) as any;
+                // Normalize alternate keys from backend so UI renders nicely
+                if (!contentPackage.postText && contentPackage.postBody) {
+                  contentPackage.postText = contentPackage.postBody;
+                }
+                if (
+                  !contentPackage.platformStrategies &&
+                  contentPackage.platformOptimizations
+                ) {
+                  contentPackage.platformStrategies =
+                    contentPackage.platformOptimizations;
+                }
+                // Video Script package (scenes/shots)
+                if (
+                  contentPackage.scenes ||
+                  contentPackage.shots ||
+                  (contentPackage.videoScript &&
+                    contentPackage.videoScript.scenes)
+                ) {
+                  const scenes = (contentPackage.scenes ||
+                    contentPackage.shots ||
+                    contentPackage.videoScript?.scenes ||
+                    []) as any[];
+                  const getText = (s: any, keys: string[]) => {
+                    for (const k of keys) {
+                      if (s && typeof s[k] === "string" && s[k].trim())
+                        return s[k];
+                      if (Array.isArray(s[k]))
+                        return (s[k] as any[]).join("\n");
+                    }
+                    return "";
+                  };
+                  const captionsAll = scenes
+                    .map(
+                      (s, i) =>
+                        `${i + 1}. ${getText(s, ["caption", "onScreenText", "text", "subtitle"])}`,
+                    )
+                    .filter((t) => t.trim())
+                    .join("\n");
+                  const fullScriptMd = scenes
+                    .map((s, i) => {
+                      const title =
+                        s.title || s.name || s.shot || `Scene ${i + 1}`;
+                      const desc = getText(s, [
+                        "description",
+                        "shot",
+                        "visual",
+                        "scene",
+                      ]);
+                      const cap = getText(s, [
+                        "caption",
+                        "onScreenText",
+                        "text",
+                        "subtitle",
+                        "voiceover",
+                      ]);
+                      const fx = getText(s, ["effects", "fx", "transitions"]);
+                      const dir = getText(s, [
+                        "directions",
+                        "direction",
+                        "filmingDirections",
+                        "camera",
+                        "cameraMovement",
+                      ]);
+                      const dur = s.duration ? `Duration: ${s.duration}` : "";
+                      return `### ${i + 1}. ${title}\n${desc ? `- Visual: ${desc}\n` : ""}${cap ? `- Caption: ${cap}\n` : ""}${fx ? `- Effects: ${fx}\n` : ""}${dir ? `- Directions: ${dir}\n` : ""}${dur}`.trim();
+                    })
+                    .join("\n\n");
+
+                  return (
+                    <div className="space-y-6">
+                      <div className="bg-gradient-to-br from-primary/5 to-primary/10 p-6 rounded-xl border border-primary/20">
+                        <div className="flex items-center justify-between mb-4">
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 bg-primary rounded-full" />
+                            <h4 className="font-semibold text-primary">
+                              Video Script
+                            </h4>
+                          </div>
+                          <div className="flex gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                copy(captionsAll);
+                                toast({ title: "Captions copied!" });
+                              }}
+                            >
+                              <Copy className="h-4 w-4 mr-2" /> Copy Captions
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                copy(fullScriptMd);
+                                toast({ title: "Full script copied!" });
+                              }}
+                            >
+                              <FileText className="h-4 w-4 mr-2" /> Copy Full
+                              Script
+                            </Button>
+                          </div>
+                        </div>
+                        <div className="grid gap-4">
+                          {scenes.map((s, i) => (
+                            <div
+                              key={i}
+                              className="bg-background/80 p-4 rounded-lg border border-primary/10"
+                            >
+                              <div className="flex items-center gap-2 mb-2">
+                                <Badge variant="secondary" className="text-xs">
+                                  Scene {i + 1}
+                                </Badge>
+                                {s.duration && (
+                                  <span className="text-[11px] text-muted-foreground">
+                                    {String(s.duration)}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="prose prose-sm dark:prose-invert max-w-none text-muted-foreground space-y-2">
+                                {getText(s, [
+                                  "description",
+                                  "shot",
+                                  "visual",
+                                  "scene",
+                                ]) && (
+                                  <div>
+                                    <strong>Visual:</strong>
+                                    <div>
+                                      <ReactMarkdown
+                                        remarkPlugins={[remarkGfm]}
+                                      >
+                                        {
+                                          getText(s, [
+                                            "description",
+                                            "shot",
+                                            "visual",
+                                            "scene",
+                                          ]) as string
+                                        }
+                                      </ReactMarkdown>
+                                    </div>
+                                  </div>
+                                )}
+                                {getText(s, [
+                                  "caption",
+                                  "onScreenText",
+                                  "text",
+                                  "subtitle",
+                                  "voiceover",
+                                ]) && (
+                                  <div>
+                                    <strong>Caption:</strong>
+                                    <div>
+                                      <ReactMarkdown
+                                        remarkPlugins={[remarkGfm]}
+                                      >
+                                        {
+                                          getText(s, [
+                                            "caption",
+                                            "onScreenText",
+                                            "text",
+                                            "subtitle",
+                                            "voiceover",
+                                          ]) as string
+                                        }
+                                      </ReactMarkdown>
+                                    </div>
+                                  </div>
+                                )}
+                                {getText(s, [
+                                  "effects",
+                                  "fx",
+                                  "transitions",
+                                ]) && (
+                                  <div>
+                                    <strong>Effects/Transitions:</strong>
+                                    <div>
+                                      <ReactMarkdown
+                                        remarkPlugins={[remarkGfm]}
+                                      >
+                                        {
+                                          getText(s, [
+                                            "effects",
+                                            "fx",
+                                            "transitions",
+                                          ]) as string
+                                        }
+                                      </ReactMarkdown>
+                                    </div>
+                                  </div>
+                                )}
+                                {getText(s, [
+                                  "directions",
+                                  "direction",
+                                  "filmingDirections",
+                                  "camera",
+                                  "cameraMovement",
+                                ]) && (
+                                  <div>
+                                    <strong>Filming Directions:</strong>
+                                    <div>
+                                      <ReactMarkdown
+                                        remarkPlugins={[remarkGfm]}
+                                      >
+                                        {
+                                          getText(s, [
+                                            "directions",
+                                            "direction",
+                                            "filmingDirections",
+                                            "camera",
+                                            "cameraMovement",
+                                          ]) as string
+                                        }
+                                      </ReactMarkdown>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {(contentPackage.platformGuidance ||
+                        contentPackage.platformStrategies) && (
+                        <div className="bg-gradient-to-br from-blue-50 to-blue-100 dark:from-blue-950/20 dark:to-blue-900/20 p-6 rounded-xl border border-blue-200 dark:border-blue-800">
+                          <div className="flex items-center gap-2 mb-4">
+                            <div className="w-2 h-2 bg-blue-600 rounded-full" />
+                            <h4 className="font-semibold text-blue-700 dark:text-blue-400">
+                              Platform Guidance
+                            </h4>
+                          </div>
+                          <div className="prose prose-sm dark:prose-invert max-w-none text-muted-foreground">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                              {String(
+                                (contentPackage.platformGuidance ||
+                                  contentPackage.platformStrategies) ??
+                                  "",
+                              )}
+                            </ReactMarkdown>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+
                 // Check for new comprehensive content package format
                 if (contentPackage.postText && contentPackage.hashtags) {
                   return (
@@ -24547,9 +31114,11 @@ function GeneratedContentCard({ item }: { item: GeneratedContent }) {
                               <h5 className="text-xs font-semibold text-primary mb-2 uppercase tracking-wide">
                                 Hook
                               </h5>
-                              <p className="text-sm font-medium text-foreground">
-                                {contentPackage.hook}
-                              </p>
+                              <div className="prose prose-sm dark:prose-invert max-w-none text-foreground">
+                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                  {String(contentPackage.hook ?? "")}
+                                </ReactMarkdown>
+                              </div>
                             </div>
                           )}
                           {/* Main Post Text */}
@@ -24557,9 +31126,11 @@ function GeneratedContentCard({ item }: { item: GeneratedContent }) {
                             <h5 className="text-xs font-semibold text-primary mb-2 uppercase tracking-wide">
                               Main Content
                             </h5>
-                            <p className="text-sm leading-relaxed whitespace-pre-wrap">
-                              {contentPackage.postText}
-                            </p>
+                            <div className="prose prose-sm dark:prose-invert max-w-none">
+                              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                {String(contentPackage.postText ?? "")}
+                              </ReactMarkdown>
+                            </div>
                           </div>
                           {/* Call to Action */}
                           {contentPackage.callToAction && (
@@ -24567,9 +31138,11 @@ function GeneratedContentCard({ item }: { item: GeneratedContent }) {
                               <h5 className="text-xs font-semibold text-primary mb-2 uppercase tracking-wide">
                                 Call to Action
                               </h5>
-                              <p className="text-sm font-medium text-foreground">
-                                {contentPackage.callToAction}
-                              </p>
+                              <div className="prose prose-sm dark:prose-invert max-w-none text-foreground">
+                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                  {String(contentPackage.callToAction ?? "")}
+                                </ReactMarkdown>
+                              </div>{" "}
                             </div>
                           )}
                           {/* Caption (if different from postText) */}
@@ -24580,9 +31153,11 @@ function GeneratedContentCard({ item }: { item: GeneratedContent }) {
                                 <h5 className="text-xs font-semibold text-primary mb-2 uppercase tracking-wide">
                                   Caption
                                 </h5>
-                                <p className="text-sm leading-relaxed whitespace-pre-wrap">
-                                  {contentPackage.caption}
-                                </p>
+                                <div className="prose prose-sm dark:prose-invert max-w-none">
+                                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                    {String(contentPackage.caption ?? "")}
+                                  </ReactMarkdown>
+                                </div>
                               </div>
                             )}
                         </div>
@@ -24641,7 +31216,7 @@ function GeneratedContentCard({ item }: { item: GeneratedContent }) {
                                   <Button
                                     size="sm"
                                     variant="secondary"
-                                    className="absolute bottom-2 right-2 bg-white/90 hover:bg-white text-black"
+                                    className="hidden absolute bottom-2 right-2 bg-white/90 hover:bg-white text-black"
                                     onClick={() => {
                                       copy(contentPackage.videoUrl);
                                       toast({ title: "Video URL copied!" });
@@ -24713,9 +31288,13 @@ function GeneratedContentCard({ item }: { item: GeneratedContent }) {
                                             )}
                                           </div>
                                         </div>
-                                        <p className="text-sm text-muted-foreground mb-3 leading-relaxed">
-                                          {strategy.strategy}
-                                        </p>
+                                        <div className="prose prose-sm dark:prose-invert max-w-none text-muted-foreground mb-3 leading-relaxed">
+                                          <ReactMarkdown
+                                            remarkPlugins={[remarkGfm]}
+                                          >
+                                            {String(strategy.strategy ?? "")}
+                                          </ReactMarkdown>
+                                        </div>{" "}
                                         {strategy.optimizedText &&
                                           strategy.optimizedText !==
                                             contentPackage.postText && (
@@ -24771,11 +31350,15 @@ function GeneratedContentCard({ item }: { item: GeneratedContent }) {
                                             {platform}
                                           </Badge>
                                         </div>
-                                        <p className="text-sm text-muted-foreground leading-relaxed">
-                                          {typeof strategy === "string"
-                                            ? strategy
-                                            : JSON.stringify(strategy)}
-                                        </p>
+                                        <div className="prose prose-sm dark:prose-invert max-w-none text-muted-foreground">
+                                          <ReactMarkdown
+                                            remarkPlugins={[remarkGfm]}
+                                          >
+                                            {typeof strategy === "string"
+                                              ? strategy
+                                              : JSON.stringify(strategy)}
+                                          </ReactMarkdown>
+                                        </div>
                                       </div>
                                     ),
                                   )}
@@ -25083,9 +31666,11 @@ function GeneratedContentCard({ item }: { item: GeneratedContent }) {
                         <h4 className="font-semibold mb-2 text-sm">
                           Post Content
                         </h4>
-                        <p className="text-sm whitespace-pre-wrap leading-relaxed">
-                          {contentPackage.content}
-                        </p>
+                        <div className="prose prose-sm dark:prose-invert max-w-none">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {String(contentPackage.content ?? "")}
+                          </ReactMarkdown>
+                        </div>
                       </div>
 
                       {/* Hook */}
@@ -25174,10 +31759,14 @@ function GeneratedContentCard({ item }: { item: GeneratedContent }) {
                                 <div key={platform} className="text-sm">
                                   <strong className="capitalize">
                                     {platform}:
-                                  </strong>{" "}
-                                  {typeof strategy === "string"
-                                    ? strategy
-                                    : JSON.stringify(strategy)}
+                                  </strong>
+                                  <div className="prose prose-sm dark:prose-invert max-w-none">
+                                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                      {typeof strategy === "string"
+                                        ? strategy
+                                        : JSON.stringify(strategy)}
+                                    </ReactMarkdown>
+                                  </div>
                                 </div>
                               ))}
                           </div>
@@ -25199,9 +31788,11 @@ function GeneratedContentCard({ item }: { item: GeneratedContent }) {
                         <h4 className="font-semibold mb-2 text-sm">
                           Post Content
                         </h4>
-                        <p className="text-sm whitespace-pre-wrap leading-relaxed">
-                          {contentPackage.postText}
-                        </p>
+                        <div className="prose prose-sm dark:prose-invert max-w-none">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {String(contentPackage.postText ?? "")}
+                          </ReactMarkdown>
+                        </div>
                       </div>
                       {contentPackage.imageUrl && (
                         <div className="bg-muted/30 p-4 rounded-lg border">
@@ -25347,6 +31938,64 @@ function GeneratedContentCard({ item }: { item: GeneratedContent }) {
                     <Button
                       size={isDesktop ? "sm" : "default"}
                       variant="outline"
+                      onClick={() => {
+                        (() => {
+                          try {
+                            const baseTitle = item.title || "Content";
+                            let baseBody = "";
+                            try {
+                              const pkg = JSON.parse(
+                                item.content || "{}",
+                              ) as any;
+                              if (pkg && typeof pkg === "object") {
+                                baseBody =
+                                  (pkg.postText ||
+                                    pkg.content ||
+                                    pkg.caption ||
+                                    "") +
+                                  (pkg.callToAction
+                                    ? "\n\nCTA: " + pkg.callToAction
+                                    : "");
+                              }
+                            } catch {
+                              baseBody = (item.content || "").toString();
+                            }
+                            const message = (
+                              "Generate 3 fresh, on-brand variations of this post. " +
+                              "Label clearly as Variation 1, Variation 2, Variation 3.\n\n" +
+                              "Title: " +
+                              baseTitle +
+                              "\n\nBase:\n" +
+                              baseBody
+                            ).trim();
+                            window.dispatchEvent(
+                              new CustomEvent("open-ripple", {
+                                detail: {
+                                  message,
+                                  context: "auto_open;generate_more",
+                                  forceFullscreen: true,
+                                  autoSend: true,
+                                },
+                              }),
+                            );
+                          } catch {}
+                        })();
+                      }}
+                      disabled={generateMoreMutation.isLoading}
+                      className={`${isDesktop ? "" : "min-h-[44px]"} transition-all duration-200 active:scale-95`}
+                    >
+                      {generateMoreMutation.isLoading ? (
+                        <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                      ) : (
+                        <Bot className="h-4 w-4 mr-2" />
+                      )}
+                      {generateMoreMutation.isLoading
+                        ? "Generating..."
+                        : "Generate more"}
+                    </Button>{" "}
+                    <Button
+                      size={isDesktop ? "sm" : "default"}
+                      variant="outline"
                       onClick={async () => {
                         try {
                           const res = await apiClient.shareGeneratedContent({
@@ -25397,7 +32046,7 @@ function GeneratedContentCard({ item }: { item: GeneratedContent }) {
                 <Button
                   size={isDesktop ? "sm" : "default"}
                   variant="destructive"
-                  onClick={() => deleteMutation.mutate({ contentId: item.id })}
+                  onClick={() => setConfirmOpen(true)}
                   disabled={deleteMutation.isLoading}
                   className={`${isDesktop ? "" : "min-h-[44px]"} transition-all duration-200 active:scale-95`}
                 >
@@ -25419,6 +32068,30 @@ function GeneratedContentCard({ item }: { item: GeneratedContent }) {
           isScheduling={schedulePostMutation.isLoading}
         />
       )}
+
+      {/* Confirm Delete */}
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this content?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will remove it from Generated Content. This action cannot be
+              undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                deleteMutation.mutate({ contentId: item.id });
+                setConfirmOpen(false);
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Mobile Context Menu */}
       {showContextMenu && (
@@ -25526,6 +32199,14 @@ function InlineContentPreview({
 
   const [isScheduling, setIsScheduling] = useState(false);
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && onClose) onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   const schedulePostMutation = useMutation(apiClient.schedulePost, {
     onSuccess: () => {
       toast({ title: "Content scheduled successfully!" });
@@ -25592,44 +32273,172 @@ function InlineContentPreview({
               className="rounded-lg border max-w-full h-auto"
             />
           ) : (
-            <div className="prose prose-sm max-w-none">
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                components={{
-                  p: ({ children }) => (
-                    <p className="text-sm text-muted-foreground whitespace-pre-wrap mb-2">
-                      {children}
-                    </p>
-                  ),
-                  h1: ({ children }) => (
-                    <h1 className="text-lg font-semibold mb-2">{children}</h1>
-                  ),
-                  h2: ({ children }) => (
-                    <h2 className="text-md font-semibold mb-2">{children}</h2>
-                  ),
-                  h3: ({ children }) => (
-                    <h3 className="text-sm font-semibold mb-1">{children}</h3>
-                  ),
-                  ul: ({ children }) => (
-                    <ul className="list-disc pl-4 mb-2">{children}</ul>
-                  ),
-                  ol: ({ children }) => (
-                    <ol className="list-decimal pl-4 mb-2">{children}</ol>
-                  ),
-                  li: ({ children }) => (
-                    <li className="text-sm text-muted-foreground mb-1">
-                      {children}
-                    </li>
-                  ),
-                  strong: ({ children }) => (
-                    <strong className="font-semibold">{children}</strong>
-                  ),
-                  em: ({ children }) => <em className="italic">{children}</em>,
-                }}
-              >
-                {contentItem.content}
-              </ReactMarkdown>
-            </div>
+            (() => {
+              type ContentPackage = {
+                title?: string;
+                postText?: string;
+                postBody?: string;
+                content?: string; // sometimes used instead of postText/postBody
+                hashtags?: Record<string, string[]> | string[];
+                platformStrategies?: any[] | Record<string, any>;
+                platformOptimizations?: any[];
+                callToAction?: string;
+                hook?: string;
+                imageUrl?: string;
+                videoUrl?: string;
+                originalViralPost?: { hashtags?: string[] };
+              };
+
+              let parsed: ContentPackage | null = null;
+              try {
+                const obj = JSON.parse(contentItem.content) as ContentPackage;
+                if (obj && typeof obj === "object") {
+                  // Normalize alternate keys so UI renders nicely
+                  if (!obj.postText) {
+                    if (obj.postBody) obj.postText = obj.postBody;
+                    else if (obj.content) obj.postText = String(obj.content);
+                  }
+
+                  if (!obj.platformStrategies && obj.platformOptimizations) {
+                    obj.platformStrategies = obj.platformOptimizations as any;
+                  }
+
+                  // Prefer top-level hashtags, otherwise fall back to originalViralPost.hashtags
+                  if (!obj.hashtags && obj.originalViralPost?.hashtags) {
+                    obj.hashtags = obj.originalViralPost.hashtags as any;
+                  }
+
+                  // Clean up hashtags: remove trailing commas and trim whitespace
+                  const cleanTag = (t: string) => t.replace(/,+$/g, "").trim();
+                  if (Array.isArray(obj.hashtags)) {
+                    obj.hashtags = (obj.hashtags as string[]).map(cleanTag);
+                  } else if (obj.hashtags && typeof obj.hashtags === "object") {
+                    const rec = obj.hashtags as Record<string, string[]>;
+                    const cleaned: Record<string, string[]> = {};
+                    Object.keys(rec).forEach((k) => {
+                      const arr = (rec[k] ?? []) as string[];
+                      cleaned[k] = arr.map(cleanTag);
+                    });
+                    obj.hashtags = cleaned as any;
+                  }
+
+                  parsed = obj;
+                }
+              } catch {
+                parsed = null;
+              }
+
+              if (parsed && parsed.postText && parsed.hashtags) {
+                const hashtagsArray = Array.isArray(parsed.hashtags)
+                  ? parsed.hashtags
+                  : Object.values(parsed.hashtags as Record<string, string[]>)
+                      .flat()
+                      .slice(0, 12);
+
+                return (
+                  <div className="space-y-4">
+                    <div className="bg-gradient-to-br from-primary/5 to-primary/10 p-4 rounded-lg border border-primary/20">
+                      {parsed.hook && (
+                        <p className="text-xs font-medium text-primary mb-2">
+                          {parsed.hook}
+                        </p>
+                      )}
+                      <p className="text-sm leading-relaxed whitespace-pre-wrap text-foreground">
+                        {parsed.postText}
+                      </p>
+                      {parsed.callToAction && (
+                        <p className="text-sm font-medium mt-3 text-foreground">
+                          {parsed.callToAction}
+                        </p>
+                      )}
+                    </div>
+
+                    {(parsed.imageUrl || parsed.videoUrl) && (
+                      <div className="grid gap-3">
+                        {parsed.imageUrl && (
+                          <img
+                            src={parsed.imageUrl}
+                            alt="Generated visual"
+                            className="rounded-lg border max-w-full h-auto"
+                          />
+                        )}
+                        {parsed.videoUrl && (
+                          <video
+                            src={parsed.videoUrl}
+                            className="rounded-lg border max-w-full h-auto"
+                            controls
+                            preload="metadata"
+                          />
+                        )}
+                      </div>
+                    )}
+
+                    {hashtagsArray && hashtagsArray.length > 0 && (
+                      <div className="flex flex-wrap gap-2">
+                        {hashtagsArray.map((tag: string, i: number) => (
+                          <span
+                            key={`${tag}-${i}`}
+                            className="text-xs bg-purple-100 dark:bg-purple-900 text-purple-700 dark:text-purple-300 px-2 py-1 rounded-full border border-purple-200 dark:border-purple-700"
+                          >
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              }
+
+              // Fallback: render as markdown/plain text
+              return (
+                <div className="prose prose-sm max-w-none">
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      p: ({ children }) => (
+                        <p className="text-sm text-muted-foreground whitespace-pre-wrap mb-2">
+                          {children}
+                        </p>
+                      ),
+                      h1: ({ children }) => (
+                        <h1 className="text-lg font-semibold mb-2">
+                          {children}
+                        </h1>
+                      ),
+                      h2: ({ children }) => (
+                        <h2 className="text-md font-semibold mb-2">
+                          {children}
+                        </h2>
+                      ),
+                      h3: ({ children }) => (
+                        <h3 className="text-sm font-semibold mb-1">
+                          {children}
+                        </h3>
+                      ),
+                      ul: ({ children }) => (
+                        <ul className="list-disc pl-4 mb-2">{children}</ul>
+                      ),
+                      ol: ({ children }) => (
+                        <ol className="list-decimal pl-4 mb-2">{children}</ol>
+                      ),
+                      li: ({ children }) => (
+                        <li className="text-sm text-muted-foreground mb-1">
+                          {children}
+                        </li>
+                      ),
+                      strong: ({ children }) => (
+                        <strong className="font-semibold">{children}</strong>
+                      ),
+                      em: ({ children }) => (
+                        <em className="italic">{children}</em>
+                      ),
+                    }}
+                  >
+                    {contentItem.content}
+                  </ReactMarkdown>
+                </div>
+              );
+            })()
           )}
         </div>
       </div>
@@ -25746,16 +32555,109 @@ function GeneratedContentTab({
   // Pull-to-refresh (mobile)
   usePullToRefresh(handleRefresh);
 
+  const { toast } = useToast();
+  const bulkDeleteMutation = useMutation(apiClient.bulkDeleteGeneratedContent, {
+    onMutate: async (variables: { contentIds: string[] }) => {
+      await queryClient.cancelQueries({
+        queryKey: queryKeys.generatedContent(selectedPillarId || undefined),
+      });
+      const previous = queryClient.getQueryData<any[]>(
+        queryKeys.generatedContent(selectedPillarId || undefined),
+      );
+      queryClient.setQueryData<any[]>(
+        queryKeys.generatedContent(selectedPillarId || undefined),
+        (old) =>
+          (old ?? []).filter((c: any) => !variables.contentIds.includes(c.id)),
+      );
+      return { previous } as { previous?: any[] };
+    },
+    onError: (_error, _vars, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(
+          queryKeys.generatedContent(selectedPillarId || undefined),
+          context.previous,
+        );
+      }
+      toast({ title: "Couldn't delete items", variant: "destructive" });
+    },
+    onSuccess: () => {
+      toast({ title: "Selected items deleted" });
+      setSelectedIds([]);
+      setSelectionMode(false);
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.generatedContent(selectedPillarId || undefined),
+      });
+    },
+  });
+
   // UI/UX enhancements: search and sort toolbar
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] = useState<"newest" | "oldest" | "title">("newest");
+  const [typeFilter, setTypeFilter] = useState<
+    "ALL" | "TEXT" | "IMAGE" | "VIDEO"
+  >("ALL");
+  const [dateRange, setDateRange] = useState<
+    "any" | "today" | "7" | "30" | "custom"
+  >("any");
+  const [customStart, setCustomStart] = useState<string>("");
+  const [customEnd, setCustomEnd] = useState<string>("");
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
   const visibleContent = React.useMemo(() => {
+    const now = new Date();
+    const startOfToday = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+    ).getTime();
+
     const items = (generatedContent ?? []).filter((it: any) => {
-      if (!search.trim()) return true;
+      // Type filter
+      if (typeFilter !== "ALL" && it.type !== typeFilter) return false;
+
+      // Date range filter
+      const created = new Date(it.createdAt).getTime();
+      if (dateRange !== "any") {
+        let startTime = -Infinity;
+        let endTime = Infinity;
+        if (dateRange === "today") {
+          startTime = startOfToday;
+          endTime = now.getTime();
+        } else if (dateRange === "7") {
+          startTime = now.getTime() - 7 * 24 * 60 * 60 * 1000;
+          endTime = now.getTime();
+        } else if (dateRange === "30") {
+          startTime = now.getTime() - 30 * 24 * 60 * 60 * 1000;
+          endTime = now.getTime();
+        } else if (dateRange === "custom") {
+          if (customStart) startTime = new Date(customStart).getTime();
+          if (customEnd) {
+            const end = new Date(customEnd);
+            // include the full end day
+            endTime = new Date(
+              end.getFullYear(),
+              end.getMonth(),
+              end.getDate(),
+              23,
+              59,
+              59,
+              999,
+            ).getTime();
+          }
+        }
+        if (!(created >= startTime && created <= endTime)) return false;
+      }
+
+      // Search filter
+      const query = search.trim().toLowerCase();
+      if (!query) return true;
       const hay = `${it.title ?? ""} ${it.content ?? ""}`.toLowerCase();
-      return hay.includes(search.toLowerCase());
+      return hay.includes(query);
     });
+
     return items.sort((a: any, b: any) => {
       if (sortBy === "title") {
         return (a.title ?? "").localeCompare(b.title ?? "");
@@ -25764,7 +32666,15 @@ function GeneratedContentTab({
       const bd = new Date(b.createdAt).getTime();
       return sortBy === "newest" ? bd - ad : ad - bd;
     });
-  }, [generatedContent, search, sortBy]);
+  }, [
+    generatedContent,
+    search,
+    sortBy,
+    typeFilter,
+    dateRange,
+    customStart,
+    customEnd,
+  ]);
 
   return (
     <Card>
@@ -25776,22 +32686,80 @@ function GeneratedContentTab({
               Content generated from your recommendations, organized by pillar.
             </CardDescription>
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleRefresh}
-            disabled={isRefreshing}
-            className="shrink-0"
-            aria-label="Refresh generated content"
-          >
-            {isRefreshing ? (
-              <RefreshCw className="h-4 w-4 animate-spin mr-2" />
+          <div className="flex items-center gap-2">
+            {!selectionMode ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setSelectionMode(true)}
+                className="shrink-0"
+              >
+                Select
+              </Button>
             ) : (
-              <RefreshCw className="h-4 w-4 mr-2" />
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setSelectionMode(false);
+                    setSelectedIds([]);
+                  }}
+                  className="shrink-0"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  disabled={
+                    selectedIds.length === 0 || bulkDeleteMutation.isLoading
+                  }
+                  onClick={() =>
+                    bulkDeleteMutation.mutate({ contentIds: selectedIds })
+                  }
+                  className="shrink-0"
+                >
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  Delete{" "}
+                  {selectedIds.length > 0 ? `(${selectedIds.length})` : ""}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    if (selectedIds.length === visibleContent.length) {
+                      setSelectedIds([]);
+                    } else {
+                      setSelectedIds(visibleContent.map((it: any) => it.id));
+                    }
+                  }}
+                  className="shrink-0"
+                >
+                  {selectedIds.length === visibleContent.length &&
+                  visibleContent.length > 0
+                    ? "Deselect all"
+                    : "Select all"}
+                </Button>
+              </>
             )}
-            Refresh
-          </Button>
-        </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleRefresh}
+              disabled={isRefreshing}
+              className="shrink-0"
+              aria-label="Refresh generated content"
+            >
+              {isRefreshing ? (
+                <RefreshCw className="h-4 w-4 animate-spin mr-2" />
+              ) : (
+                <RefreshCw className="h-4 w-4 mr-2" />
+              )}
+              Refresh
+            </Button>
+          </div>
+        </div>{" "}
         {/* Toolbar */}
         <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3">
           <div className="md:col-span-2">
@@ -25816,6 +32784,73 @@ function GeneratedContentTab({
                 <SelectItem value="title">Title A–Z</SelectItem>
               </SelectContent>
             </Select>
+          </div>
+        </div>
+        {/* Filter bar */}
+        <div className="mt-2 flex flex-col gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted-foreground">Type</span>
+            {(["ALL", "TEXT", "IMAGE", "VIDEO"] as const).map((t) => (
+              <Button
+                key={t}
+                size="sm"
+                variant={typeFilter === t ? "secondary" : "outline"}
+                className="h-8"
+                onClick={() => setTypeFilter(t)}
+              >
+                {t === "ALL" ? "All" : t.charAt(0) + t.slice(1).toLowerCase()}
+              </Button>
+            ))}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted-foreground">Date</span>
+            <Select
+              value={dateRange}
+              onValueChange={(v) => setDateRange(v as any)}
+            >
+              <SelectTrigger className="h-9 w-[170px]">
+                <SelectValue placeholder="Date range" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="any">Any time</SelectItem>
+                <SelectItem value="today">Today</SelectItem>
+                <SelectItem value="7">Last 7 days</SelectItem>
+                <SelectItem value="30">Last 30 days</SelectItem>
+                <SelectItem value="custom">Custom range…</SelectItem>
+              </SelectContent>
+            </Select>
+            {dateRange === "custom" && (
+              <>
+                <Input
+                  type="date"
+                  value={customStart}
+                  onChange={(e) => setCustomStart(e.target.value)}
+                  className="h-9 w-[160px]"
+                  aria-label="Start date"
+                />
+                <span className="text-xs text-muted-foreground">to</span>
+                <Input
+                  type="date"
+                  value={customEnd}
+                  onChange={(e) => setCustomEnd(e.target.value)}
+                  className="h-9 w-[160px]"
+                  aria-label="End date"
+                />
+              </>
+            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8"
+              onClick={() => {
+                setTypeFilter("ALL");
+                setDateRange("any");
+                setCustomStart("");
+                setCustomEnd("");
+              }}
+            >
+              Reset
+            </Button>
           </div>
         </div>
       </CardHeader>
@@ -25884,8 +32919,29 @@ function GeneratedContentTab({
                   {visibleContent.length === 1 ? "" : "s"}
                 </div>
                 {visibleContent.map((item: any) => (
-                  <GeneratedContentCard key={item.id} item={item} />
-                ))}
+                  <div key={item.id} className="relative">
+                    {selectionMode && (
+                      <div className="absolute top-2 left-2 z-10">
+                        <Checkbox
+                          checked={selectedIds.includes(item.id)}
+                          onCheckedChange={(v) => {
+                            setSelectedIds((prev) =>
+                              v
+                                ? Array.from(new Set([...prev, item.id]))
+                                : prev.filter((x) => x !== item.id),
+                            );
+                          }}
+                          aria-label={
+                            selectedIds.includes(item.id)
+                              ? "Deselect item"
+                              : "Select item"
+                          }
+                        />
+                      </div>
+                    )}
+                    <GeneratedContentCard item={item} />
+                  </div>
+                ))}{" "}
               </div>
             ) : (
               <EmptyState
@@ -25904,7 +32960,7 @@ function GeneratedContentTab({
 function ImageGenerationTab({
   onImageGenerated,
 }: {
-  onImageGenerated: (pillarId: string) => void;
+  onImageGenerated: (pillarId: string, contentId: string) => void;
 }) {
   const [prompt, setPrompt] = useState("");
   // Removed unused upgrade dialog state
@@ -25921,7 +32977,7 @@ function ImageGenerationTab({
         description:
           "Your new image has been added to the Generated Content library.",
       });
-      onImageGenerated(data.pillarId); // Notify parent to switch tab
+      onImageGenerated(data.pillarId, (data as any).id); // Notify parent to switch tab and open preview
     },
     onError: (error: Error) => {
       if (
@@ -25949,51 +33005,82 @@ function ImageGenerationTab({
   };
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>AI Image Generation</CardTitle>
-        <CardDescription>
-          Create stunning images for your social media posts with a simple text
-          prompt. Generated images will be added to your "Generated Content"
-          library.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="space-y-2">
-          <Label htmlFor="image-prompt">Image Prompt</Label>
-          <Textarea
-            id="image-prompt"
-            placeholder="e.g., A futuristic cityscape at sunset, with flying cars and neon lights"
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            className="min-h-[100px]"
-          />
-        </div>
-        <Button
-          onClick={handleGenerate}
-          disabled={generateImageMutation.isLoading || !prompt}
-        >
-          {generateImageMutation.isLoading ? (
-            <RefreshCw className="h-4 w-4 animate-spin mr-2" />
-          ) : (
-            <Sparkles className="h-4 w-4 mr-2" />
-          )}
-          Generate & Add to Library
-        </Button>
-        {generateImageMutation.isLoading && (
-          <div className="flex justify-center items-center p-8">
-            <LoadingSpinner />
+    <Collapsible defaultOpen={false}>
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle>AI Image Generation</CardTitle>
+              <CardDescription>
+                Create stunning images for your social media posts with a simple
+                text prompt. Generated images will be added to your "Generated
+                Content" library.
+              </CardDescription>
+              <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+                <span>On-brand: Uses your Brand Guidelines + Brand Vibe.</span>
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="inline-flex items-center justify-center w-4 h-4 rounded-full border text-[10px] cursor-default">
+                        i
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p className="max-w-[260px] text-xs">
+                        Image prompts are conditioned on both your Brand
+                        Guidelines and Brand Vibe to keep visuals consistent.
+                      </p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </div>
+            </div>
+            <CollapsibleTrigger asChild>
+              <Button variant="outline" size="sm" className="h-8">
+                Open
+              </Button>
+            </CollapsibleTrigger>
           </div>
-        )}
-      </CardContent>
-    </Card>
+        </CardHeader>
+        <CollapsibleContent>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="image-prompt">Image Prompt</Label>
+              <Textarea
+                id="image-prompt"
+                placeholder="e.g., A futuristic cityscape at sunset, with flying cars and neon lights"
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                className="min-h-[100px]"
+              />
+            </div>
+            <Button
+              onClick={handleGenerate}
+              disabled={generateImageMutation.isLoading || !prompt}
+            >
+              {generateImageMutation.isLoading ? (
+                <RefreshCw className="h-4 w-4 animate-spin mr-2" />
+              ) : (
+                <Sparkles className="h-4 w-4 mr-2" />
+              )}
+              Generate & Add to Library
+            </Button>
+            {generateImageMutation.isLoading && (
+              <div className="flex justify-center items-center p-8">
+                <LoadingSpinner />
+              </div>
+            )}
+          </CardContent>
+        </CollapsibleContent>
+      </Card>
+    </Collapsible>
   );
 }
 
 function VideoGenerationTab({
   onVideoGenerated,
 }: {
-  onVideoGenerated: () => void;
+  onVideoGenerated: (contentId: string) => void;
 }) {
   const [title, setTitle] = useState("");
   const [script, setScript] = useState("");
@@ -26002,13 +33089,13 @@ function VideoGenerationTab({
 
   const generateVideoMutation = useMutation({
     mutationFn: apiClient.generateVideoFromScript,
-    onSuccess: () => {
+    onSuccess: (data) => {
       toast({
-        title: "Video Generation Started!",
+        title: "Video Script Created!",
         description:
-          "Your new video is being generated and will be available in the Generated Content library.",
+          "A detailed script package was added to your Generated Content library.",
       });
-      onVideoGenerated(); // Notify parent to switch tab
+      onVideoGenerated((data as any).contentId); // Notify parent to switch tab and open preview
     },
     onError: (error: Error) => {
       if (
@@ -26038,11 +33125,30 @@ function VideoGenerationTab({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>AI Video Generation</CardTitle>
+        <CardTitle>Video Script Studio</CardTitle>
         <CardDescription>
-          Create engaging videos from a script. Generated videos will be added
-          to your "Generated Content" library.
+          Create a production‑ready short‑form video script with shot list,
+          captions and effects. Note: the platform does not auto‑generate
+          videos; we provide an on‑brand script package you can film.
         </CardDescription>
+        <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+          <span>On-brand: Uses your Brand Guidelines + Brand Vibe.</span>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-flex items-center justify-center w-4 h-4 rounded-full border text-[10px] cursor-default">
+                  i
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p className="max-w-[260px] text-xs">
+                  Video scripts and visuals stay on-brand by applying your
+                  Guidelines together with your Brand Vibe.
+                </p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        </div>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="space-y-2">
@@ -26073,7 +33179,7 @@ function VideoGenerationTab({
           ) : (
             <Sparkles className="h-4 w-4 mr-2" />
           )}
-          Generate & Add to Library
+          Generate Script
         </Button>
       </CardContent>
     </Card>
@@ -26249,11 +33355,69 @@ function DiscoverPage() {
     | "saved"
     | undefined;
 
+  // Ideas (Beta) — Tinder-like swipe deck
+  type IdeasFeed = inferRPCOutputType<"getIdeasFeed">;
+  type IdeaItem = IdeasFeed["items"][number];
+  const { data: userSettings } = useUserSettings();
+  const ideasEnabled = !!userSettings?.ideasBetaEnabled;
+
+  const [ideasActive, setIdeasActive] = useState(false);
+  const [deck, setDeck] = useState<IdeaItem[]>([]);
+  const [detailItem, setDetailItem] = useState<IdeaItem | null>(null);
+  const { toast } = useToast();
+  const [dragX, setDragX] = useState(0);
+
+  const ideasQuery = useQuery(
+    ["ideasFeed"],
+    () => apiClient.getIdeasFeed({ limit: 50 }),
+    { enabled: ideasActive },
+  );
+
+  useEffect(() => {
+    const d = ideasQuery.data as IdeasFeed | undefined;
+    if (ideasActive && d?.items) {
+      setDeck(d.items as IdeaItem[]);
+    }
+  }, [ideasActive, ideasQuery.data]);
+
+  const recordInteraction = useMutation(apiClient.recordIdeaInteraction, {
+    onError: () => {
+      toast({
+        title: "Something went wrong",
+        description: "Please try again.",
+      });
+    },
+  });
+
+  const popFromDeck = (id: string) =>
+    setDeck((prev) => prev.filter((i) => i.id !== id));
+
+  const handleDismiss = (item: IdeaItem, source: string) => {
+    recordInteraction.mutate({
+      ideaId: item.id,
+      ideaType: item.type,
+      action: "dismiss",
+      metadata: { source },
+    });
+    popFromDeck(item.id);
+  };
+
+  const handleExplore = (item: IdeaItem, source: string) => {
+    recordInteraction.mutate({
+      ideaId: item.id,
+      ideaType: item.type,
+      action: "explore",
+      metadata: { source },
+    });
+    popFromDeck(item.id);
+    setDetailItem(item);
+  };
+
   return (
     <div className="space-y-6 overflow-x-hidden max-w-full">
       <MetaTags
         title="Discover | SocialWave"
-        description="Uncover viral trends, get AI-powered content recommendations, and develop your content strategy with SocialWave's Discover hub."
+        description="Uncover viral trends, get AI-powered recommendations, and develop your content strategy — all tuned to your full Brand Vibe."
         keywords="content strategy, viral marketing, trend analysis, social media insights, AI recommendations"
       />
       <StructuredData
@@ -26268,6 +33432,216 @@ function DiscoverPage() {
 
       {/* Brand Setup Indicator */}
       <BrandSetupIndicator className="mb-4" />
+
+      {/* Ideas (Beta) Section */}
+      {ideasEnabled && (
+        <div className="w-full min-w-0 overflow-x-hidden">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold">Ideas (Beta)</div>
+              <div className="text-xs text-muted-foreground">
+                Swipe right to explore, left to dismiss.
+              </div>
+            </div>
+            {!ideasActive ? (
+              <Button size="sm" onClick={() => setIdeasActive(true)}>
+                Start swiping
+              </Button>
+            ) : (
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setIdeasActive(false);
+                    setDeck([]);
+                  }}
+                >
+                  Hide
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => ideasQuery.refetch()}
+                  disabled={ideasQuery.isFetching}
+                >
+                  Refresh
+                </Button>
+              </div>
+            )}
+          </div>
+
+          {ideasActive && (
+            <div className="mt-4">
+              {ideasQuery.isLoading ? (
+                <div className="h-[220px] md:h-[420px] bg-muted/60 rounded-xl animate-pulse" />
+              ) : deck.length > 0 ? (
+                <div className="relative h-[360px] md:h-[420px] max-w-xl mx-auto select-none">
+                  {/* Card stack */}
+                  <AnimatePresence initial={false}>
+                    {deck.slice(0, 3).map((item, idx) => {
+                      const isTop = idx === 0;
+                      return (
+                        <motion.div
+                          key={item.id}
+                          className="absolute inset-0"
+                          style={{ zIndex: 3 - idx }}
+                          drag={isTop ? "x" : false}
+                          dragConstraints={{ left: 0, right: 0 }}
+                          onDrag={(_e, info) => {
+                            if (!isTop) return;
+                            setDragX(info.offset.x || 0);
+                          }}
+                          onDragEnd={(_e, info) => {
+                            if (!isTop) return;
+                            if (info.offset.x < -120)
+                              handleDismiss(item, "swipe-left");
+                            else if (info.offset.x > 120)
+                              handleExplore(item, "swipe-right");
+                          }}
+                          initial={{
+                            scale: 0.98,
+                            y: idx * 10,
+                            opacity: 0.95,
+                            rotate: idx === 1 ? -2 : idx === 2 ? 2 : 0,
+                          }}
+                          animate={{
+                            scale: isTop ? 1 : 0.98,
+                            y: idx * 10,
+                            opacity: 1,
+                            rotate: isTop
+                              ? dragX / 25
+                              : idx === 1
+                                ? -2
+                                : idx === 2
+                                  ? 2
+                                  : 0,
+                          }}
+                          exit={{ opacity: 0 }}
+                        >
+                          <div className="bg-card border border-border rounded-xl shadow-md p-4 h-full flex flex-col">
+                            <div className="flex items-center justify-between mb-2">
+                              <span className="text-xs uppercase tracking-wide text-muted-foreground">
+                                {item.type === "trending"
+                                  ? "Trending Topic"
+                                  : item.type === "viral"
+                                    ? "Viral Concept"
+                                    : "Audience Insight"}
+                              </span>
+                              {typeof item.score === "number" && (
+                                <span className="text-xs bg-secondary px-2 py-1 rounded">
+                                  Score {Math.round(item.score)}
+                                </span>
+                              )}
+                            </div>
+                            <h3 className="text-lg font-semibold line-clamp-2">
+                              {item.title}
+                            </h3>
+                            {item.hook && (
+                              <p className="mt-2 text-sm text-muted-foreground line-clamp-3">
+                                {item.hook}
+                              </p>
+                            )}
+                            {item.body && (
+                              <p className="mt-2 text-sm line-clamp-6">
+                                {item.body}
+                              </p>
+                            )}
+                            <div className="mt-auto pt-3 flex items-center gap-3 justify-center">
+                              <Button
+                                variant="secondary"
+                                onClick={() => handleDismiss(item, "button")}
+                                disabled={recordInteraction.isLoading}
+                              >
+                                Dismiss
+                              </Button>
+                              <Button
+                                onClick={() => handleExplore(item, "button")}
+                                disabled={recordInteraction.isLoading}
+                              >
+                                Explore
+                              </Button>
+                            </div>
+                          </div>
+                        </motion.div>
+                      );
+                    })}
+                  </AnimatePresence>
+                </div>
+              ) : (
+                <div className="bg-muted rounded-lg p-6 text-center">
+                  <div className="mb-2 font-medium">You're all caught up</div>
+                  <Button size="sm" onClick={() => ideasQuery.refetch()}>
+                    Reload ideas
+                  </Button>
+                </div>
+              )}
+
+              {/* Details overlay for explored idea */}
+              {detailItem && (
+                <div
+                  className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+                  onClick={() => setDetailItem(null)}
+                  role="dialog"
+                  aria-modal="true"
+                >
+                  <div
+                    className="bg-background border border-border rounded-lg w-full max-w-xl max-h-[85vh] overflow-auto p-4"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <div className="text-xs uppercase text-muted-foreground mb-1">
+                          {detailItem.type}
+                        </div>
+                        <h3 className="text-xl font-semibold">
+                          {detailItem.title}
+                        </h3>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setDetailItem(null)}
+                      >
+                        Close
+                      </Button>
+                    </div>
+                    {detailItem.hook && (
+                      <p className="mt-3 text-sm text-muted-foreground">
+                        {detailItem.hook}
+                      </p>
+                    )}
+                    {detailItem.body && (
+                      <p className="mt-3 text-sm whitespace-pre-wrap">
+                        {detailItem.body}
+                      </p>
+                    )}
+                    {detailItem.sources?.length ? (
+                      <div className="mt-4">
+                        <div className="text-xs font-medium mb-2">Sources</div>
+                        <ul className="space-y-1 text-sm list-disc pl-5">
+                          {detailItem.sources.map((s, i) => (
+                            <li key={i}>
+                              <a
+                                className="underline"
+                                href={s.url}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                {s.title || s.url}
+                              </a>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Intelligence Hub Content - No Navigation Tabs */}
       <div className="w-full min-w-0 min-h-[600px] overflow-x-hidden">
@@ -26284,9 +33658,15 @@ function DiscoverPage() {
 
       {/* Enhanced Content Preview */}
       {previewContentId && (
-        <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div
+          className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setPreviewContentId(null)}
+        >
           <div
             className={`bg-background border border-border rounded-lg shadow-2xl w-full max-h-[90vh] overflow-auto ${isMobile ? "mx-2" : "max-w-4xl"}`}
+            onClick={(e) => e.stopPropagation()}
           >
             <InlineContentPreview
               contentId={previewContentId}
@@ -26928,7 +34308,11 @@ function AnalyticsPage() {
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  const { data: accounts, isLoading: isLoadingAccounts } = useQuery({
+  const {
+    data: accounts,
+    isLoading: isLoadingAccounts,
+    error: accountsError,
+  } = useQuery({
     queryKey: ["accounts"],
     queryFn: apiClient.getConnectedAccounts,
   });
@@ -26938,6 +34322,14 @@ function AnalyticsPage() {
     : [];
 
   const [selectedPlatform, setSelectedPlatform] = useState<string | null>(null);
+
+  // Seamless default: auto-pick a platform when connected
+  useEffect(() => {
+    if (!selectedPlatform && connectedPlatforms.length > 0) {
+      const hasFacebook = connectedPlatforms.includes("facebook");
+      setSelectedPlatform(hasFacebook ? "facebook" : connectedPlatforms[0]!);
+    }
+  }, [connectedPlatforms, selectedPlatform]);
 
   const facebookPages = React.useMemo(() => {
     return (
@@ -26963,6 +34355,7 @@ function AnalyticsPage() {
   }, [facebookPages, selectedPlatform]);
 
   const [isHeaderRefreshing, setIsHeaderRefreshing] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   async function handleRefreshAll() {
     try {
@@ -27001,11 +34394,40 @@ function AnalyticsPage() {
     }
   }
 
+  // One-tap end-to-end analysis
+  const handleAnalyzeNow = async () => {
+    try {
+      setIsAnalyzing(true);
+      if (selectedPlatform === "facebook" && selectedPageId) {
+        try {
+          // @ts-ignore
+          await refreshAnalyticsAsync({ pageId: selectedPageId });
+        } catch {}
+      }
+      try {
+        // @ts-ignore
+        await fetchCommentsAsync();
+      } catch {}
+      await handleRefreshAll();
+      setActiveTab("comments");
+      toast({
+        title: "Analyzing your data…",
+        description: "This can take up to a minute on first run.",
+      });
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
   usePullToRefresh(async () => {
     await handleRefreshAll();
   });
 
-  const { data: summary, isLoading: isLoadingSummary } = useQuery({
+  const {
+    data: summary,
+    isLoading: isLoadingSummary,
+    error: summaryError,
+  } = useQuery({
     queryKey: ["analyticsSummary", selectedPageId, selectedPlatform],
     queryFn: () =>
       apiClient.getAnalyticsSummary({
@@ -27014,7 +34436,11 @@ function AnalyticsPage() {
       }),
   });
 
-  const { data: heatmapData, isLoading: isLoadingHeatmap } = useQuery({
+  const {
+    data: heatmapData,
+    isLoading: isLoadingHeatmap,
+    error: heatmapError,
+  } = useQuery({
     queryKey: ["postingActivityHeatmap", selectedPageId, selectedPlatform],
     queryFn: () =>
       apiClient.getPostingActivityHeatmap({
@@ -27023,16 +34449,23 @@ function AnalyticsPage() {
       }),
   });
 
-  const { data: learningInsights, isLoading: isLoadingInsights } = useQuery({
+  const {
+    data: learningInsights,
+    isLoading: isLoadingInsights,
+    error: insightsError,
+  } = useQuery({
     queryKey: ["learningInsights"],
     queryFn: apiClient.getLearningInsights,
   });
 
-  const { data: learningAnalytics, isLoading: isLoadingLearningAnalytics } =
-    useQuery({
-      queryKey: ["learningAnalytics"],
-      queryFn: apiClient.getLearningAnalytics,
-    });
+  const {
+    data: learningAnalytics,
+    isLoading: isLoadingLearningAnalytics,
+    error: learningAnalyticsError,
+  } = useQuery({
+    queryKey: ["learningAnalytics"],
+    queryFn: apiClient.getLearningAnalytics,
+  });
 
   // Brand Intelligence Analytics
   const { data: brandSignals } = useBrandSignals();
@@ -27053,13 +34486,23 @@ function AnalyticsPage() {
     { enabled: !!brandSignals },
   );
 
-  const { data: analyticsData, isLoading: isLoadingAnalytics } = useQuery({
+  const {
+    data: analyticsData,
+    isLoading: isLoadingAnalytics,
+    error: analyticsError,
+  } = useQuery({
     queryKey: ["pageAnalytics", selectedPageId],
-    queryFn: () => apiClient.getPageAnalytics({ pageId: selectedPageId! }),
+    queryFn: ({ queryKey }) =>
+      apiClient.getPageAnalytics({ pageId: String(queryKey[1] as string) }),
     enabled: !!selectedPageId && selectedPlatform === "facebook",
+    retry: 0,
   });
 
-  const { mutate: refreshAnalytics, isLoading: isRefreshing } = useMutation({
+  const {
+    mutate: refreshAnalytics,
+    mutateAsync: refreshAnalyticsAsync,
+    isLoading: isRefreshing,
+  } = useMutation({
     mutationFn: apiClient.refreshAnalyticsData,
     onSuccess: () => {
       queryClient.invalidateQueries({
@@ -27076,14 +34519,25 @@ function AnalyticsPage() {
     },
   });
 
-  const { mutate: fetchComments, isLoading: isFetchingComments } = useMutation({
+  const {
+    mutate: fetchComments,
+    mutateAsync: fetchCommentsAsync,
+    isLoading: isFetchingComments,
+  } = useMutation({
     mutationFn: apiClient.fetchComments,
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ["analyticsSummary"] });
       queryClient.invalidateQueries({ queryKey: ["pageAnalytics"] });
+      void queryClient.refetchQueries({ queryKey: ["analyticsSummary"] });
+      void queryClient.refetchQueries({ queryKey: ["pageAnalytics"] });
+      setActiveTab("comments");
       toast({
-        title: "Comments fetched successfully!",
-        description: `Found ${result.newCommentsCount} new comments.`,
+        title:
+          result.newCommentsCount > 0 ? "Comments fetched" : "No new comments",
+        description:
+          result.newCommentsCount > 0
+            ? `Found ${result.newCommentsCount} new comments.`
+            : "We didn’t find new comments yet. Try a different time range or fetch again shortly.",
       });
     },
     onError: (error: any) => {
@@ -27209,348 +34663,473 @@ function AnalyticsPage() {
 
   return (
     <div className={`${isMobile ? "space-y-4" : "space-y-6"}`}>
-      <motion.div
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5 }}
-        className={`${isMobile ? "space-y-4" : "flex justify-between items-center"}`}
-      >
-        <div>
-          <motion.h1
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: 0.1, duration: 0.5 }}
-            className={`font-bold gradient-text ${isMobile ? "text-2xl" : "text-3xl"}`}
-          >
-            Analytics
-          </motion.h1>
-          <motion.p
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: 0.2, duration: 0.5 }}
-            className={`text-muted-foreground ${isMobile ? "text-sm" : "text-lg"}`}
-          >
-            {isMobile
-              ? "Track social media performance"
-              : "Track your social media performance and audience engagement."}
-          </motion.p>
-        </div>
-
+      <>
         <motion.div
-          initial={{ opacity: 0, x: 20 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ delay: 0.3, duration: 0.5 }}
-          className={`flex items-center ${isMobile ? "flex-col space-y-3" : "gap-4"}`}
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5 }}
+          className={`${isMobile ? "space-y-4" : "flex justify-between items-center"}`}
         >
-          <div
-            className={`flex items-center gap-2 ${isMobile ? "w-full" : ""}`}
-          >
-            <motion.select
-              whileHover={{ scale: 1.02 }}
-              whileFocus={{ scale: 1.02 }}
-              value={selectedPlatform || "all"}
-              onChange={(e) => {
-                setSelectedPlatform(
-                  e.target.value === "all" ? null : e.target.value,
-                );
-                if (e.target.value !== "facebook") {
-                  setSelectedPageId(null);
-                }
-              }}
-              className={`px-3 py-2 rounded-md border border-input bg-background transition-all duration-200 hover:border-primary/50 focus:border-primary ${isMobile ? "flex-1" : ""}`}
+          <div>
+            <motion.h1
+              initial={{ opacity: 0, x: -20 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: 0.1, duration: 0.5 }}
+              className={`font-bold gradient-text ${isMobile ? "text-2xl" : "text-3xl"}`}
             >
-              <option value="all">All Platforms</option>
-              {connectedPlatforms.map((platform) => (
-                <option key={platform} value={platform} className="capitalize">
-                  {platform}
-                </option>
-              ))}
-            </motion.select>
-
-            {selectedPlatform === "facebook" &&
-              facebookPages &&
-              facebookPages.length > 0 && (
-                <motion.select
-                  initial={{ opacity: 0, scale: 0.9 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  transition={{ duration: 0.3 }}
-                  whileHover={{ scale: 1.02 }}
-                  whileFocus={{ scale: 1.02 }}
-                  value={selectedPageId || ""}
-                  onChange={(e) => setSelectedPageId(e.target.value)}
-                  className={`px-3 py-2 rounded-md border border-input bg-background transition-all duration-200 hover:border-primary/50 focus:border-primary ${isMobile ? "flex-1" : ""}`}
-                >
-                  {facebookPages.map((page: any) => (
-                    <option key={page.pageId} value={page.pageId}>
-                      {isMobile
-                        ? page.pageName.length > 20
-                          ? page.pageName.substring(0, 20) + "..."
-                          : page.pageName
-                        : page.pageName}
-                    </option>
-                  ))}
-                </motion.select>
-              )}
+              Analytics
+            </motion.h1>
+            <motion.p
+              initial={{ opacity: 0, x: -20 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: 0.2, duration: 0.5 }}
+              className={`text-muted-foreground ${isMobile ? "text-sm" : "text-lg"}`}
+            >
+              {isMobile
+                ? "Track social media performance"
+                : "Track your social media performance and audience engagement."}
+            </motion.p>
           </div>
 
-          <Button
-            onClick={handleRefreshAll}
-            disabled={isHeaderRefreshing}
-            size={isMobile ? "sm" : "default"}
-            variant="secondary"
-            className={`${isMobile ? "w-full" : ""} relative overflow-hidden group hover:shadow-md transition-all duration-300`}
+          <motion.div
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ delay: 0.3, duration: 0.5 }}
+            className={`flex items-center ${isMobile ? "flex-col space-y-3" : "gap-4"}`}
           >
-            <div className="absolute inset-0 bg-gradient-to-r from-primary/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
-            <motion.div
-              animate={isHeaderRefreshing ? { rotate: 360 } : { rotate: 0 }}
-              transition={
-                isHeaderRefreshing
-                  ? { duration: 1, repeat: Infinity, ease: "linear" }
-                  : { duration: 0.3 }
-              }
-              className="relative z-10"
+            <div
+              className={`flex items-center gap-2 ${isMobile ? "w-full" : ""}`}
             >
-              <RefreshCw
-                className={isMobile ? "mr-1 h-3 w-3" : "mr-2 h-4 w-4"}
-              />
-            </motion.div>
-            <span className="relative z-10">
-              {isMobile ? "Refresh" : "Refresh"}
-            </span>
-          </Button>
-
-          {selectedPlatform === "facebook" && (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ duration: 0.3 }}
-              className="flex gap-2 flex-wrap"
-            >
-              <Button
-                onClick={() => fetchComments()}
-                disabled={isFetchingComments}
-                size={isMobile ? "sm" : "default"}
-                className={`${isMobile ? "flex-1" : ""} relative overflow-hidden group hover:shadow-md transition-all duration-300`}
-              >
-                <div className="absolute inset-0 bg-gradient-to-r from-primary/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
-                <motion.div
-                  animate={isFetchingComments ? { rotate: 360 } : { rotate: 0 }}
-                  transition={
-                    isFetchingComments
-                      ? { duration: 1, repeat: Infinity, ease: "linear" }
-                      : { duration: 0.3 }
-                  }
-                  className="relative z-10"
-                >
-                  <MessageSquare
-                    className={isMobile ? "mr-1 h-3 w-3" : "mr-2 h-4 w-4"}
-                  />
-                </motion.div>
-                <span className="relative z-10">
-                  {isMobile ? "Fetch" : "Fetch Comments"}
-                </span>
-              </Button>
-              <Button
-                onClick={() => {
-                  if (selectedPageId) {
-                    refreshAnalytics({ pageId: selectedPageId });
+              <motion.select
+                whileHover={{ scale: 1.02 }}
+                whileFocus={{ scale: 1.02 }}
+                value={selectedPlatform || "all"}
+                onChange={(e) => {
+                  setSelectedPlatform(
+                    e.target.value === "all" ? null : e.target.value,
+                  );
+                  if (e.target.value !== "facebook") {
+                    setSelectedPageId(null);
                   }
                 }}
-                disabled={isRefreshing || !selectedPageId}
-                size={isMobile ? "sm" : "default"}
-                variant="outline"
-                className={`${isMobile ? "flex-1" : ""} relative overflow-hidden group hover:shadow-md transition-all duration-300`}
+                className={`px-3 py-2 rounded-md border border-input bg-background transition-all duration-200 hover:border-primary/50 focus:border-primary ${isMobile ? "flex-1" : ""}`}
               >
-                <div className="absolute inset-0 bg-gradient-to-r from-primary/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
-                <motion.div
-                  animate={isRefreshing ? { rotate: 360 } : { rotate: 0 }}
-                  transition={
-                    isRefreshing
-                      ? { duration: 1, repeat: Infinity, ease: "linear" }
-                      : { duration: 0.3 }
-                  }
-                  className="relative z-10"
+                <option value="all">All Platforms</option>
+                {connectedPlatforms.map((platform) => (
+                  <option
+                    key={platform}
+                    value={platform}
+                    className="capitalize"
+                  >
+                    {platform}
+                  </option>
+                ))}
+              </motion.select>
+
+              {selectedPlatform === "facebook" &&
+                facebookPages &&
+                facebookPages.length > 0 && (
+                  <motion.select
+                    initial={{ opacity: 0, scale: 0.9 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    transition={{ duration: 0.3 }}
+                    whileHover={{ scale: 1.02 }}
+                    whileFocus={{ scale: 1.02 }}
+                    value={selectedPageId || ""}
+                    onChange={(e) => setSelectedPageId(e.target.value)}
+                    className={`px-3 py-2 rounded-md border border-input bg-background transition-all duration-200 hover:border-primary/50 focus:border-primary ${isMobile ? "flex-1" : ""}`}
+                  >
+                    {facebookPages.map((page: any) => (
+                      <option key={page.pageId} value={page.pageId}>
+                        {isMobile
+                          ? page.pageName.length > 20
+                            ? page.pageName.substring(0, 20) + "..."
+                            : page.pageName
+                          : page.pageName}
+                      </option>
+                    ))}
+                  </motion.select>
+                )}
+            </div>
+
+            <Button
+              onClick={handleRefreshAll}
+              disabled={isHeaderRefreshing}
+              size={isMobile ? "sm" : "default"}
+              variant="secondary"
+              className={`${isMobile ? "w-full" : ""} relative overflow-hidden group hover:shadow-md transition-all duration-300`}
+            >
+              <div className="absolute inset-0 bg-gradient-to-r from-primary/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+              <motion.div
+                animate={isHeaderRefreshing ? { rotate: 360 } : { rotate: 0 }}
+                transition={
+                  isHeaderRefreshing
+                    ? { duration: 1, repeat: Infinity, ease: "linear" }
+                    : { duration: 0.3 }
+                }
+                className="relative z-10"
+              >
+                <RefreshCw
+                  className={isMobile ? "mr-1 h-3 w-3" : "mr-2 h-4 w-4"}
+                />
+              </motion.div>
+              <span className="relative z-10">
+                {isMobile ? "Refresh" : "Refresh"}
+              </span>
+            </Button>
+
+            {accounts && accounts.length > 0 && (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ duration: 0.3 }}
+                className="flex gap-2 flex-wrap"
+              >
+                <Button
+                  onClick={() => fetchComments()}
+                  disabled={isFetchingComments}
+                  size={isMobile ? "sm" : "default"}
+                  className={`${isMobile ? "flex-1" : ""} relative overflow-hidden group hover:shadow-md transition-all duration-300`}
                 >
-                  <RefreshCw
-                    className={isMobile ? "mr-1 h-3 w-3" : "mr-2 h-4 w-4"}
-                  />
-                </motion.div>
-                <span className="relative z-10">
-                  {isMobile ? "Refresh" : "Refresh Data"}
-                </span>
-              </Button>
-            </motion.div>
-          )}
+                  <div className="absolute inset-0 bg-gradient-to-r from-primary/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+                  <motion.div
+                    animate={
+                      isFetchingComments ? { rotate: 360 } : { rotate: 0 }
+                    }
+                    transition={
+                      isFetchingComments
+                        ? { duration: 1, repeat: Infinity, ease: "linear" }
+                        : { duration: 0.3 }
+                    }
+                    className="relative z-10"
+                  >
+                    <MessageSquare
+                      className={isMobile ? "mr-1 h-3 w-3" : "mr-2 h-4 w-4"}
+                    />
+                  </motion.div>
+                  <span className="relative z-10">
+                    {isMobile ? "Fetch" : "Fetch Comments"}
+                  </span>
+                </Button>
+                <Button
+                  onClick={() => {
+                    if (selectedPageId) {
+                      refreshAnalytics({ pageId: selectedPageId });
+                    }
+                  }}
+                  disabled={isRefreshing || !selectedPageId}
+                  size={isMobile ? "sm" : "default"}
+                  variant="outline"
+                  className={`${isMobile ? "flex-1" : ""} relative overflow-hidden group hover:shadow-md transition-all duration-300`}
+                >
+                  <div className="absolute inset-0 bg-gradient-to-r from-primary/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+                  <motion.div
+                    animate={isRefreshing ? { rotate: 360 } : { rotate: 0 }}
+                    transition={
+                      isRefreshing
+                        ? { duration: 1, repeat: Infinity, ease: "linear" }
+                        : { duration: 0.3 }
+                    }
+                    className="relative z-10"
+                  >
+                    <RefreshCw
+                      className={isMobile ? "mr-1 h-3 w-3" : "mr-2 h-4 w-4"}
+                    />
+                  </motion.div>
+                  <span className="relative z-10">
+                    {isMobile ? "Refresh" : "Refresh Data"}
+                  </span>
+                </Button>
+              </motion.div>
+            )}
+          </motion.div>
         </motion.div>
-      </motion.div>
-      {isLoadingAccounts ? (
-        <div className="space-y-4">
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-            {[...Array(4)].map((_, i) => (
-              <Card key={i} className="stats-card">
-                <CardHeader className="flex flex-row items-center justify-between pb-2">
-                  <Skeleton className="h-4 w-20" />
-                  <Skeleton className="h-4 w-4 rounded" />
+        {/* Analytics Loading/Errors Banner */}
+        {(isLoadingSummary ||
+          isLoadingHeatmap ||
+          isLoadingInsights ||
+          isLoadingLearningAnalytics ||
+          isAnalyzing) && (
+          <div className="bg-muted/40 border border-border rounded-md p-3 flex items-start gap-3">
+            <Loader2 className="h-4 w-4 mt-0.5 animate-spin text-muted-foreground" />
+            <div className="text-sm">
+              <div className="font-medium">Crunching your analytics…</div>
+              <div className="text-muted-foreground">
+                This can take up to ~30–60 seconds on first run. You can keep
+                browsing; we’ll display results as soon as they’re ready.
+              </div>
+            </div>
+            <div className="ml-auto">
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleRefreshAll}
+                  disabled={isHeaderRefreshing}
+                >
+                  Retry
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={handleAnalyzeNow}
+                  disabled={isAnalyzing}
+                >
+                  Analyze Now
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+        {(accountsError ||
+          summaryError ||
+          heatmapError ||
+          insightsError ||
+          learningAnalyticsError ||
+          (selectedPlatform === "facebook" &&
+            selectedPageId &&
+            analyticsError)) && (
+          <div className="bg-destructive/10 border border-destructive rounded-md p-3 text-destructive flex items-start gap-3">
+            <div className="text-sm">
+              <div className="font-medium">We couldn’t load some analytics</div>
+              <div className="opacity-80">
+                Please try again. If this keeps happening, pull to refresh or
+                come back in a minute.
+              </div>
+            </div>
+            <div className="ml-auto">
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={handleRefreshAll}
+                disabled={isHeaderRefreshing}
+              >
+                Try Again
+              </Button>
+            </div>
+          </div>
+        )}
+        {isLoadingAccounts ? (
+          <div className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+              {[...Array(4)].map((_, i) => (
+                <Card key={i} className="stats-card">
+                  <CardHeader className="flex flex-row items-center justify-between pb-2">
+                    <Skeleton className="h-4 w-20" />
+                    <Skeleton className="h-4 w-4 rounded" />
+                  </CardHeader>
+                  <CardContent>
+                    <Skeleton className="h-8 w-16 mb-2" />
+                    <Skeleton className="h-3 w-24" />
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+            <div className="grid gap-4 grid-cols-1 md:grid-cols-2 lg:grid-cols-7 w-full max-w-full">
+              <Card className="lg:col-span-4">
+                <CardHeader>
+                  <Skeleton className="h-5 w-32" />
+                  <Skeleton className="h-4 w-48" />
                 </CardHeader>
-                <CardContent>
-                  <Skeleton className="h-8 w-16 mb-2" />
-                  <Skeleton className="h-3 w-24" />
+                <CardContent className="h-96">
+                  <Skeleton className="h-full w-full" />
                 </CardContent>
               </Card>
-            ))}
+              <Card className="lg:col-span-3">
+                <CardHeader>
+                  <Skeleton className="h-5 w-32" />
+                  <Skeleton className="h-4 w-48" />
+                </CardHeader>
+                <CardContent className="h-80">
+                  <Skeleton className="h-full w-full rounded-full" />
+                </CardContent>
+              </Card>
+            </div>
           </div>
-          <div className="grid gap-4 grid-cols-1 md:grid-cols-2 lg:grid-cols-7 w-full max-w-full">
-            <Card className="lg:col-span-4">
-              <CardHeader>
-                <Skeleton className="h-5 w-32" />
-                <Skeleton className="h-4 w-48" />
-              </CardHeader>
-              <CardContent className="h-96">
-                <Skeleton className="h-full w-full" />
-              </CardContent>
-            </Card>
-            <Card className="lg:col-span-3">
-              <CardHeader>
-                <Skeleton className="h-5 w-32" />
-                <Skeleton className="h-4 w-48" />
-              </CardHeader>
-              <CardContent className="h-80">
-                <Skeleton className="h-full w-full rounded-full" />
-              </CardContent>
-            </Card>
+        ) : isLoadingSummary ? (
+          <div className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+              {[...Array(4)].map((_, i) => (
+                <Card key={i} className="stats-card">
+                  <CardHeader className="flex flex-row items-center justify-between pb-2">
+                    <CardTitle className="text-sm font-medium">
+                      Loading...
+                    </CardTitle>
+                    <Skeleton className="h-4 w-4 rounded" />
+                  </CardHeader>
+                  <CardContent>
+                    <Skeleton className="h-8 w-16 mb-2" />
+                    <Skeleton className="h-3 w-24" />
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+            <LoadingSpinner className="py-8" />
           </div>
-        </div>
-      ) : isLoadingSummary ? (
-        <div className="space-y-4">
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-            {[...Array(4)].map((_, i) => (
-              <Card key={i} className="stats-card">
-                <CardHeader className="flex flex-row items-center justify-between pb-2">
-                  <CardTitle className="text-sm font-medium">
-                    Loading...
+        ) : !accounts || accounts.length === 0 ? (
+          <EmptyState
+            icon={<BarChart3 />}
+            title="Connect Your Social Media Accounts"
+            description="To view analytics, you need to connect at least one social media account. Connect your Facebook, Twitter, YouTube, or Instagram accounts to start tracking your performance."
+          >
+            <div className="flex flex-col sm:flex-row gap-2">
+              <Button
+                onClick={() => navigate("/settings")}
+                className="flex items-center gap-2"
+              >
+                <Settings className="h-4 w-4" />
+                Connect Accounts
+              </Button>
+            </div>
+          </EmptyState>
+        ) : summary &&
+          summary.totalComments === 0 &&
+          summary.totalEngagement === 0 ? (
+          <EmptyState
+            icon={<MessageCircle />}
+            title="No Comments Data Yet"
+            description="You have connected accounts, but no comments have been fetched yet. Fetch comments from your social media accounts to see analytics data."
+          >
+            <div className="flex flex-col sm:flex-row gap-2">
+              <Button
+                onClick={handleAnalyzeNow}
+                disabled={isAnalyzing}
+                className="flex items-center gap-2"
+              >
+                <Brain className="h-4 w-4" />
+                {isAnalyzing ? "Analyzing…" : "Analyze Now"}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => handleRefreshAll()}
+                disabled={isHeaderRefreshing}
+                className="flex items-center gap-2"
+              >
+                <RefreshCw className="h-4 w-4" />
+                {isHeaderRefreshing ? "Refreshing…" : "Refresh Data"}
+              </Button>
+            </div>
+          </EmptyState>
+        ) : (
+          <>
+            <div
+              className={`grid gap-4 ${isMobile ? "grid-cols-1" : "md:grid-cols-2 lg:grid-cols-4"}`}
+            >
+              <AnalyticsStatsCard
+                title="Total Engagement"
+                value={summary?.totalEngagement?.toLocaleString() || "0"}
+                icon={<ThumbsUp className="h-4 w-4 text-muted-foreground" />}
+                description="Likes, comments, shares"
+              />
+              <AnalyticsStatsCard
+                title="Response Rate"
+                value={`${summary?.responseRate?.toFixed(1) || "0"}%`}
+                icon={<Percent className="h-4 w-4 text-muted-foreground" />}
+                description={`${summary?.totalComments || "0"} total comments`}
+              />
+              <AnalyticsStatsCard
+                title="Followers"
+                value={
+                  summary?.followerCount?.current?.toLocaleString() || "N/A"
+                }
+                change={summary?.followerCount?.change ?? undefined}
+                icon={<Users className="h-4 w-4 text-muted-foreground" />}
+                description="Only available for Facebook Pages"
+              />
+              <AnalyticsStatsCard
+                title="Total Comments"
+                value={summary?.totalComments?.toLocaleString() || "0"}
+                icon={
+                  <MessageCircle className="h-4 w-4 text-muted-foreground" />
+                }
+                description="Across selected platforms"
+              />
+            </div>
+            {/* Mobile: Stack Charts Vertically, Desktop: Side by Side */}
+            <div
+              className={`grid gap-4 w-full max-w-full ${isMobile ? "grid-cols-1" : "md:grid-cols-2 lg:grid-cols-7"}`}
+            >
+              <Card className={isMobile ? "" : "lg:col-span-4"}>
+                <CardHeader className={isMobile ? "pb-3" : ""}>
+                  <CardTitle className={isMobile ? "text-base" : "text-lg"}>
+                    Impressions & Reach
                   </CardTitle>
-                  <Skeleton className="h-4 w-4 rounded" />
+                  <CardDescription className={isMobile ? "text-sm" : ""}>
+                    Only available for Facebook Pages.
+                  </CardDescription>
                 </CardHeader>
-                <CardContent>
-                  <Skeleton className="h-8 w-16 mb-2" />
-                  <Skeleton className="h-3 w-24" />
+                <CardContent className={isMobile ? "h-64" : "h-96"}>
+                  {selectedPlatform === "facebook" && selectedPageId ? (
+                    isLoadingAnalytics ? (
+                      <LoadingSpinner />
+                    ) : analyticsData && analyticsData.length > 0 ? (
+                      <Line
+                        data={lineChartData}
+                        options={{
+                          ...lineChartOptions,
+                          maintainAspectRatio: false,
+                          responsive: true,
+                          plugins: {
+                            legend: {
+                              position: isMobile ? "bottom" : "top",
+                              labels: {
+                                boxWidth: isMobile ? 12 : 15,
+                                font: {
+                                  size: isMobile ? 10 : 12,
+                                },
+                              },
+                            },
+                          },
+                        }}
+                      />
+                    ) : (
+                      <EmptyState
+                        icon={<BarChart3 />}
+                        title="No Analytics Data"
+                        description={
+                          isMobile
+                            ? "No data for this page yet."
+                            : "We don't have any analytics data for this page yet. Try refreshing the data."
+                        }
+                      />
+                    )
+                  ) : (
+                    <EmptyState
+                      icon={<BarChart3 />}
+                      title="Select a Facebook Page"
+                      description={
+                        isMobile
+                          ? "Only available for Facebook."
+                          : "This chart is only available for Facebook Pages."
+                      }
+                    />
+                  )}
                 </CardContent>
               </Card>
-            ))}
-          </div>
-          <LoadingSpinner className="py-8" />
-        </div>
-      ) : !accounts || accounts.length === 0 ? (
-        <EmptyState
-          icon={<BarChart3 />}
-          title="Connect Your Social Media Accounts"
-          description="To view analytics, you need to connect at least one social media account. Connect your Facebook, Twitter, YouTube, or Instagram accounts to start tracking your performance."
-        >
-          <div className="flex flex-col sm:flex-row gap-2">
-            <Button
-              onClick={() => navigate("/settings")}
-              className="flex items-center gap-2"
-            >
-              <Settings className="h-4 w-4" />
-              Connect Accounts
-            </Button>
-          </div>
-        </EmptyState>
-      ) : summary &&
-        summary.totalComments === 0 &&
-        summary.totalEngagement === 0 ? (
-        <EmptyState
-          icon={<MessageCircle />}
-          title="No Comments Data Yet"
-          description="You have connected accounts, but no comments have been fetched yet. Fetch comments from your social media accounts to see analytics data."
-        >
-          <div className="flex flex-col sm:flex-row gap-2">
-            <Button
-              onClick={() => navigate("/engage")}
-              className="flex items-center gap-2"
-            >
-              <MessageCircle className="h-4 w-4" />
-              Go to Engage Page
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => {
-                // Trigger comment fetching
-                queryClient.invalidateQueries({ queryKey: ["accounts"] });
-                queryClient.invalidateQueries({
-                  queryKey: ["analyticsSummary"],
-                });
-                toast({
-                  title: "Refreshing data...",
-                  description:
-                    "Please check the Engage page to fetch comments first.",
-                });
-              }}
-              className="flex items-center gap-2"
-            >
-              <RefreshCw className="h-4 w-4" />
-              Refresh Data
-            </Button>
-          </div>
-        </EmptyState>
-      ) : (
-        <>
-          <div
-            className={`grid gap-4 ${isMobile ? "grid-cols-1" : "md:grid-cols-2 lg:grid-cols-4"}`}
-          >
-            <AnalyticsStatsCard
-              title="Total Engagement"
-              value={summary?.totalEngagement?.toLocaleString() || "0"}
-              icon={<ThumbsUp className="h-4 w-4 text-muted-foreground" />}
-              description="Likes, comments, shares"
-            />
-            <AnalyticsStatsCard
-              title="Response Rate"
-              value={`${summary?.responseRate.toFixed(1) || "0"}%`}
-              icon={<Percent className="h-4 w-4 text-muted-foreground" />}
-              description={`${summary?.totalComments || "0"} total comments`}
-            />
-            <AnalyticsStatsCard
-              title="Followers"
-              value={summary?.followerCount.current?.toLocaleString() || "N/A"}
-              change={summary?.followerCount.change ?? undefined}
-              icon={<Users className="h-4 w-4 text-muted-foreground" />}
-              description="Only available for Facebook Pages"
-            />
-            <AnalyticsStatsCard
-              title="Total Comments"
-              value={summary?.totalComments.toLocaleString() || "0"}
-              icon={<MessageCircle className="h-4 w-4 text-muted-foreground" />}
-              description="Across selected platforms"
-            />
-          </div>
-          {/* Mobile: Stack Charts Vertically, Desktop: Side by Side */}
-          <div
-            className={`grid gap-4 w-full max-w-full ${isMobile ? "grid-cols-1" : "md:grid-cols-2 lg:grid-cols-7"}`}
-          >
-            <Card className={isMobile ? "" : "lg:col-span-4"}>
-              <CardHeader className={isMobile ? "pb-3" : ""}>
-                <CardTitle className={isMobile ? "text-base" : "text-lg"}>
-                  Impressions & Reach
-                </CardTitle>
-                <CardDescription className={isMobile ? "text-sm" : ""}>
-                  Only available for Facebook Pages.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className={isMobile ? "h-64" : "h-96"}>
-                {selectedPlatform === "facebook" && selectedPageId ? (
-                  isLoadingAnalytics ? (
-                    <LoadingSpinner />
-                  ) : analyticsData && analyticsData.length > 0 ? (
-                    <Line
-                      data={lineChartData}
+
+              <Card className={isMobile ? "" : "lg:col-span-3"}>
+                <CardHeader className={isMobile ? "pb-3" : ""}>
+                  <CardTitle className={isMobile ? "text-base" : "text-lg"}>
+                    Sentiment Breakdown
+                  </CardTitle>
+                  <CardDescription className={isMobile ? "text-sm" : ""}>
+                    Sentiment analysis of all comments.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent
+                  className={`flex justify-center items-center ${isMobile ? "h-64" : "h-80"}`}
+                >
+                  {summary?.sentimentBreakdown &&
+                  Object.values(summary.sentimentBreakdown).some(
+                    (v) => v > 0,
+                  ) ? (
+                    <Doughnut
+                      data={sentimentData}
                       options={{
-                        ...lineChartOptions,
-                        maintainAspectRatio: false,
                         responsive: true,
+                        maintainAspectRatio: false,
                         plugins: {
                           legend: {
-                            position: isMobile ? "bottom" : "top",
+                            position: "bottom",
                             labels: {
                               boxWidth: isMobile ? 12 : 15,
                               font: {
@@ -27563,595 +35142,921 @@ function AnalyticsPage() {
                     />
                   ) : (
                     <EmptyState
-                      icon={<BarChart3 />}
-                      title="No Analytics Data"
+                      icon={<PieChart />}
+                      title="No Sentiment Data"
                       description={
                         isMobile
-                          ? "No data for this page yet."
-                          : "We don't have any analytics data for this page yet. Try refreshing the data."
+                          ? "No comments found."
+                          : "No comments with sentiment data found."
                       }
                     />
-                  )
-                ) : (
-                  <EmptyState
-                    icon={<BarChart3 />}
-                    title="Select a Facebook Page"
-                    description={
-                      isMobile
-                        ? "Only available for Facebook."
-                        : "This chart is only available for Facebook Pages."
-                    }
-                  />
-                )}
-              </CardContent>
-            </Card>
-
-            <Card className={isMobile ? "" : "lg:col-span-3"}>
-              <CardHeader className={isMobile ? "pb-3" : ""}>
-                <CardTitle className={isMobile ? "text-base" : "text-lg"}>
-                  Sentiment Breakdown
-                </CardTitle>
-                <CardDescription className={isMobile ? "text-sm" : ""}>
-                  Sentiment analysis of all comments.
-                </CardDescription>
-              </CardHeader>
-              <CardContent
-                className={`flex justify-center items-center ${isMobile ? "h-64" : "h-80"}`}
-              >
-                {summary &&
-                Object.values(summary.sentimentBreakdown).some((v) => v > 0) ? (
-                  <Doughnut
-                    data={sentimentData}
-                    options={{
-                      responsive: true,
-                      maintainAspectRatio: false,
-                      plugins: {
-                        legend: {
-                          position: "bottom",
-                          labels: {
-                            boxWidth: isMobile ? 12 : 15,
-                            font: {
-                              size: isMobile ? 10 : 12,
-                            },
-                          },
-                        },
-                      },
-                    }}
-                  />
-                ) : (
-                  <EmptyState
-                    icon={<PieChart />}
-                    title="No Sentiment Data"
-                    description={
-                      isMobile
-                        ? "No comments found."
-                        : "No comments with sentiment data found."
-                    }
-                  />
-                )}
-              </CardContent>
-            </Card>
-          </div>
-          {/* Tabs for different analytics views */}
-          <Tabs
-            value={activeTab}
-            onValueChange={setActiveTab}
-            className="w-full"
-          >
-            <TabsList
-              className={`grid w-full ${isMobile ? "grid-cols-1 h-auto" : "grid-cols-4"}`}
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+            {/* Tabs for different analytics views */}
+            <Tabs
+              value={activeTab}
+              onValueChange={setActiveTab}
+              className="w-full"
             >
-              <TabsTrigger
-                value="overview"
-                className={isMobile ? "w-full" : ""}
+              <TabsList
+                className={`grid w-full ${isMobile ? "grid-cols-1 h-auto" : "grid-cols-5"}`}
               >
-                Overview
-              </TabsTrigger>
-              <TabsTrigger
-                value="learning"
-                className={isMobile ? "w-full" : ""}
-              >
-                Learning Insights
-              </TabsTrigger>
-              <TabsTrigger
-                value="correlation"
-                className={isMobile ? "w-full" : ""}
-              >
-                Performance Correlation
-              </TabsTrigger>
-              <TabsTrigger
-                value="intelligence"
-                className={isMobile ? "w-full" : ""}
-              >
-                <Brain className="h-4 w-4 mr-2" />
-                Brand Intelligence
-              </TabsTrigger>
-            </TabsList>
-
-            <TabsContent value="overview" className="space-y-4">
-              <PostingActivityHeatmap
-                data={heatmapData || []}
-                isLoading={isLoadingHeatmap}
-              />
-            </TabsContent>
-
-            <TabsContent value="learning" className="space-y-4">
-              {isLoadingInsights ? (
-                <LoadingSpinner />
-              ) : learningInsights && learningInsights.length > 0 ? (
-                <div className="grid gap-4">
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="flex items-center gap-2">
-                        <Brain className="h-5 w-5" />
-                        AI Learning Insights
-                      </CardTitle>
-                      <CardDescription>
-                        Patterns and insights discovered by analyzing your
-                        content performance
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="space-y-4">
-                        {learningInsights.map((insight, index) => (
-                          <div key={index} className="border rounded-lg p-4">
-                            <div className="flex items-start justify-between mb-2">
-                              <h4 className="font-medium">{insight.title}</h4>
-                              <Badge
-                                variant={
-                                  insight.confidence > 0.8
-                                    ? "default"
-                                    : "secondary"
-                                }
-                              >
-                                {Math.round(insight.confidence * 100)}%
-                                confident
-                              </Badge>
-                            </div>
-                            <p className="text-sm text-muted-foreground mb-3">
-                              {insight.description}
-                            </p>
-                            {insight.recommendations &&
-                              insight.recommendations.length > 0 && (
-                                <div className="space-y-2">
-                                  <h5 className="text-sm font-medium">
-                                    Recommendations:
-                                  </h5>
-                                  <ul className="list-disc list-inside text-sm text-muted-foreground space-y-1">
-                                    {insight.recommendations.map(
-                                      (rec, recIndex) => (
-                                        <li key={recIndex}>{rec}</li>
-                                      ),
-                                    )}
-                                  </ul>
-                                </div>
-                              )}
-                          </div>
-                        ))}
-                      </div>
-                    </CardContent>
-                  </Card>
-                </div>
-              ) : (
-                <EmptyState
-                  icon={<Brain />}
-                  title="No Learning Insights Yet"
-                  description="AI insights will appear here as your content performance data grows. Keep posting and engaging to unlock personalized insights."
+                <TabsTrigger
+                  value="overview"
+                  className={isMobile ? "w-full" : ""}
+                >
+                  Overview
+                </TabsTrigger>
+                <TabsTrigger
+                  value="learning"
+                  className={isMobile ? "w-full" : ""}
+                >
+                  Learning Insights
+                </TabsTrigger>
+                <TabsTrigger
+                  value="correlation"
+                  className={isMobile ? "w-full" : ""}
+                >
+                  Performance Correlation
+                </TabsTrigger>
+                <TabsTrigger
+                  value="intelligence"
+                  className={isMobile ? "w-full" : ""}
+                >
+                  <Brain className="h-4 w-4 mr-2" />
+                  Brand Intelligence
+                </TabsTrigger>
+                <TabsTrigger
+                  value="comments"
+                  className={isMobile ? "w-full" : ""}
+                >
+                  Comment Intelligence
+                </TabsTrigger>
+              </TabsList>
+              <TabsContent value="overview" className="space-y-4">
+                <PostingActivityHeatmap
+                  data={heatmapData || []}
+                  isLoading={isLoadingHeatmap}
                 />
-              )}
-            </TabsContent>
+              </TabsContent>
 
-            <TabsContent value="correlation" className="space-y-4">
-              {isLoadingLearningAnalytics ? (
-                <LoadingSpinner />
-              ) : learningAnalytics ? (
-                <div className="grid gap-4">
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="flex items-center gap-2">
-                        <TrendingUp className="h-5 w-5" />
-                        Performance Correlation Analysis
-                      </CardTitle>
-                      <CardDescription>
-                        How different factors correlate with your content
-                        performance
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="grid gap-6">
-                        {/* Content Length Correlation */}
-                        {learningAnalytics.lengthCorrelation && (
-                          <div className="space-y-3">
-                            <h4 className="font-medium flex items-center gap-2">
-                              <FileText className="h-4 w-4" />
-                              Content Length vs Performance
-                            </h4>
-                            <div className="bg-muted/50 rounded-lg p-4">
-                              <div className="flex justify-between items-center mb-2">
-                                <span className="text-sm text-muted-foreground">
-                                  Correlation Strength
-                                </span>
+              <TabsContent value="learning" className="space-y-4">
+                {isLoadingInsights ? (
+                  <LoadingSpinner />
+                ) : learningInsights && learningInsights.length > 0 ? (
+                  <div className="grid gap-4">
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="flex items-center gap-2">
+                          <Brain className="h-5 w-5" />
+                          AI Learning Insights
+                        </CardTitle>
+                        <CardDescription>
+                          Patterns and insights discovered by analyzing your
+                          content performance
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="space-y-4">
+                          {learningInsights.map((insight, index) => (
+                            <div key={index} className="border rounded-lg p-4">
+                              <div className="flex items-start justify-between mb-2">
+                                <h4 className="font-medium">{insight.title}</h4>
                                 <Badge
                                   variant={
-                                    Math.abs(
-                                      learningAnalytics.lengthCorrelation
-                                        .correlation,
-                                    ) > 0.5
+                                    insight.confidence > 0.8
                                       ? "default"
                                       : "secondary"
                                   }
                                 >
-                                  {(
-                                    learningAnalytics.lengthCorrelation
-                                      .correlation * 100
-                                  ).toFixed(1)}
-                                  %
+                                  {Math.round(insight.confidence * 100)}%
+                                  confident
                                 </Badge>
                               </div>
-                              <p className="text-sm">
-                                Optimal length:{" "}
-                                {
-                                  learningAnalytics.lengthCorrelation
-                                    .optimalRange.min
-                                }
-                                -
-                                {
-                                  learningAnalytics.lengthCorrelation
-                                    .optimalRange.max
-                                }{" "}
-                                characters
+                              <p className="text-sm text-muted-foreground mb-3">
+                                {insight.description}
                               </p>
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Timing Correlation */}
-                        {learningAnalytics.timingCorrelation && (
-                          <div className="space-y-3">
-                            <h4 className="font-medium flex items-center gap-2">
-                              <Clock className="h-4 w-4" />
-                              Posting Time vs Performance
-                            </h4>
-                            <div className="bg-muted/50 rounded-lg p-4">
-                              <div className="flex justify-between items-center mb-2">
-                                <span className="text-sm text-muted-foreground">
-                                  Best Performance Window
-                                </span>
-                                <Badge variant="default">
-                                  {learningAnalytics.timingCorrelation.bestHours.join(
-                                    ", ",
-                                  )}
-                                  :00
-                                </Badge>
-                              </div>
-                              <p className="text-sm">
-                                {learningAnalytics.timingCorrelation.insights}
-                              </p>
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Platform Correlation */}
-                        {learningAnalytics.platformCorrelation && (
-                          <div className="space-y-3">
-                            <h4 className="font-medium flex items-center gap-2">
-                              <Share2 className="h-4 w-4" />
-                              Platform Performance
-                            </h4>
-                            <div className="grid gap-3">
-                              {Object.entries(
-                                learningAnalytics.platformCorrelation,
-                              ).map(([platform, data]: [string, any]) => (
-                                <div
-                                  key={platform}
-                                  className="bg-muted/50 rounded-lg p-4"
-                                >
-                                  <div className="flex justify-between items-center mb-2">
-                                    <span className="text-sm font-medium capitalize">
-                                      {platform}
-                                    </span>
-                                    <Badge
-                                      variant={
-                                        data.avgScore > 7
-                                          ? "default"
-                                          : "secondary"
-                                      }
-                                    >
-                                      {data.avgScore.toFixed(1)}/10
-                                    </Badge>
+                              {insight.recommendations &&
+                                insight.recommendations.length > 0 && (
+                                  <div className="space-y-2">
+                                    <h5 className="text-sm font-medium">
+                                      Recommendations:
+                                    </h5>
+                                    <ul className="list-disc list-inside text-sm text-muted-foreground space-y-1">
+                                      {insight.recommendations.map(
+                                        (rec, recIndex) => (
+                                          <li key={recIndex}>{rec}</li>
+                                        ),
+                                      )}
+                                    </ul>
                                   </div>
-                                  <p className="text-xs text-muted-foreground">
-                                    {data.totalPosts} posts analyzed
-                                  </p>
-                                </div>
-                              ))}
+                                )}
                             </div>
-                          </div>
-                        )}
+                          ))}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </div>
+                ) : (
+                  <EmptyState
+                    icon={<Brain />}
+                    title="No Learning Insights Yet"
+                    description="AI insights will appear here as your content performance data grows. Keep posting and engaging to unlock personalized insights."
+                  />
+                )}
+              </TabsContent>
 
-                        {/* Hashtag Correlation */}
-                        {learningAnalytics.hashtagCorrelation && (
-                          <div className="space-y-3">
-                            <h4 className="font-medium flex items-center gap-2">
-                              <Hash className="h-4 w-4" />
-                              Hashtag Performance
-                            </h4>
-                            <div className="bg-muted/50 rounded-lg p-4">
-                              <div className="flex justify-between items-center mb-2">
-                                <span className="text-sm text-muted-foreground">
-                                  Optimal Hashtag Count
-                                </span>
-                                <Badge variant="default">
-                                  {
-                                    learningAnalytics.hashtagCorrelation
-                                      .optimalCount
-                                  }
-                                </Badge>
-                              </div>
-                              {learningAnalytics.hashtagCorrelation
-                                .topPerformingTags.length > 0 && (
-                                <div className="mt-3">
-                                  <p className="text-xs text-muted-foreground mb-2">
-                                    Top performing tags:
-                                  </p>
-                                  <div className="flex flex-wrap gap-1">
-                                    {learningAnalytics.hashtagCorrelation.topPerformingTags
-                                      .slice(0, 5)
-                                      .map((tag, index) => (
-                                        <Badge
-                                          key={index}
-                                          variant="outline"
-                                          className="text-xs"
-                                        >
-                                          #{tag}
-                                        </Badge>
-                                      ))}
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    </CardContent>
-                  </Card>
-                </div>
-              ) : (
-                <EmptyState
-                  icon={<TrendingUp />}
-                  title="No Correlation Data Yet"
-                  description="Performance correlation analysis will appear here as you post more content and track its performance."
-                />
-              )}
-            </TabsContent>
-
-            <TabsContent value="intelligence" className="space-y-6">
-              <div className="grid gap-6">
-                {/* Brand Signals Overview */}
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <TrendingUp className="h-5 w-5" />
-                      Brand Signals Overview
-                    </CardTitle>
-                    <CardDescription>
-                      Real-time insights into your brand performance and
-                      audience engagement
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    {brandSignals ? (
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <div className="bg-muted/50 p-4 rounded-lg">
-                          <div className="text-2xl font-bold text-primary">
-                            {brandSignals?.behaviorInsights?.averageResonance?.toFixed(
-                              1,
-                            ) || "N/A"}
-                          </div>
-                          <div className="text-sm text-muted-foreground">
-                            Overall Brand Score
-                          </div>
-                        </div>
-                        <div className="bg-muted/50 p-4 rounded-lg">
-                          <div className="text-2xl font-bold text-green-600">
-                            {brandSignals?.behaviorInsights?.interactionStyle ||
-                              "N/A"}
-                          </div>
-                          <div className="text-sm text-muted-foreground">
-                            Engagement Trend
-                          </div>
-                        </div>
-                        <div className="bg-muted/50 p-4 rounded-lg">
-                          <div className="text-2xl font-bold text-blue-600">
-                            {brandSignals?.behaviorInsights?.totalEvents ||
-                              "N/A"}
-                          </div>
-                          <div className="text-sm text-muted-foreground">
-                            Audience Growth
-                          </div>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex items-center justify-center h-32">
-                        <Loader2 className="h-6 w-6 animate-spin" />
-                        <span className="ml-2">Loading brand signals...</span>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-
-                {/* Feedback Analytics */}
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <MessageSquare className="h-5 w-5" />
-                      Feedback Analytics
-                    </CardTitle>
-                    <CardDescription>
-                      Analysis of user feedback and response patterns
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    {feedbackAnalytics ? (
-                      <div className="space-y-4">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          <div className="bg-muted/50 p-4 rounded-lg">
-                            <div className="text-lg font-semibold">
-                              {feedbackAnalytics?.summary?.totalFeedback || 0}
-                            </div>
-                            <div className="text-sm text-muted-foreground">
-                              Total Feedback Items
-                            </div>
-                          </div>
-                          <div className="bg-muted/50 p-4 rounded-lg">
-                            <div className="text-lg font-semibold text-green-600">
-                              {feedbackAnalytics?.summary?.positiveRate?.toFixed(
-                                1,
-                              ) || 0}
-                              %
-                            </div>
-                            <div className="text-sm text-muted-foreground">
-                              Positive Feedback
-                            </div>
-                          </div>
-                        </div>
-                        {feedbackAnalytics?.summary?.mostCommonTags && (
-                          <div>
-                            <h4 className="font-medium mb-2">
-                              Feedback Categories
-                            </h4>
-                            <div className="space-y-2">
-                              {feedbackAnalytics.summary.mostCommonTags.map(
-                                (tag) => (
-                                  <div
-                                    key={tag.tag}
-                                    className="flex justify-between items-center"
-                                  >
-                                    <span className="capitalize">
-                                      {tag.tag}
-                                    </span>
-                                    <Badge variant="secondary">
-                                      {tag.count}
-                                    </Badge>
-                                  </div>
-                                ),
-                              )}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="flex items-center justify-center h-32">
-                        <Loader2 className="h-6 w-6 animate-spin" />
-                        <span className="ml-2">
-                          Loading feedback analytics...
-                        </span>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-
-                {/* Resonance Analytics */}
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <Target className="h-5 w-5" />
-                      Content Resonance Analytics
-                    </CardTitle>
-                    <CardDescription>
-                      How well your content resonates with your audience
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    {resonanceAnalytics ? (
-                      <div className="space-y-4">
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                          <div className="bg-muted/50 p-4 rounded-lg">
-                            <div className="text-lg font-semibold text-primary">
-                              {resonanceAnalytics?.averageResonance?.toFixed(
-                                2,
-                              ) || "N/A"}
-                            </div>
-                            <div className="text-sm text-muted-foreground">
-                              Avg Resonance Score
-                            </div>
-                          </div>
-                          <div className="bg-muted/50 p-4 rounded-lg">
-                            <div className="text-lg font-semibold text-blue-600">
-                              {resonanceAnalytics?.highPerformingContent || 0}
-                            </div>
-                            <div className="text-sm text-muted-foreground">
-                              Top Performing Content
-                            </div>
-                          </div>
-                          <div className="bg-muted/50 p-4 rounded-lg">
-                            <div className="text-lg font-semibold text-green-600">
-                              {resonanceAnalytics?.insights?.improvementTrend ||
-                                "N/A"}
-                            </div>
-                            <div className="text-sm text-muted-foreground">
-                              Improvement Trend
-                            </div>
-                          </div>
-                        </div>
-                        {resonanceAnalytics?.breakdown &&
-                          Object.keys(resonanceAnalytics.breakdown).length >
-                            0 && (
-                            <div>
-                              <h4 className="font-medium mb-2">
-                                Content Type Performance
+              <TabsContent value="correlation" className="space-y-4">
+                {isLoadingLearningAnalytics ? (
+                  <LoadingSpinner />
+                ) : learningAnalytics ? (
+                  <div className="grid gap-4">
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="flex items-center gap-2">
+                          <TrendingUp className="h-5 w-5" />
+                          Performance Correlation Analysis
+                        </CardTitle>
+                        <CardDescription>
+                          How different factors correlate with your content
+                          performance
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="grid gap-6">
+                          {/* Content Length Correlation */}
+                          {learningAnalytics.lengthCorrelation && (
+                            <div className="space-y-3">
+                              <h4 className="font-medium flex items-center gap-2">
+                                <FileText className="h-4 w-4" />
+                                Content Length vs Performance
                               </h4>
-                              <div className="flex flex-wrap gap-2">
-                                {Object.entries(
-                                  resonanceAnalytics.breakdown,
-                                ).map(([type, data], index) => (
-                                  <Badge key={index} variant="outline">
-                                    {type}: {(data as any).count}
+                              <div className="bg-muted/50 rounded-lg p-4">
+                                <div className="flex justify-between items-center mb-2">
+                                  <span className="text-sm text-muted-foreground">
+                                    Correlation Strength
+                                  </span>
+                                  <Badge
+                                    variant={
+                                      Math.abs(
+                                        learningAnalytics.lengthCorrelation
+                                          .correlation,
+                                      ) > 0.5
+                                        ? "default"
+                                        : "secondary"
+                                    }
+                                  >
+                                    {(
+                                      learningAnalytics.lengthCorrelation
+                                        .correlation * 100
+                                    ).toFixed(1)}
+                                    %
                                   </Badge>
+                                </div>
+                                <p className="text-sm">
+                                  Optimal length:{" "}
+                                  {
+                                    learningAnalytics.lengthCorrelation
+                                      .optimalRange.min
+                                  }
+                                  -
+                                  {
+                                    learningAnalytics.lengthCorrelation
+                                      .optimalRange.max
+                                  }{" "}
+                                  characters
+                                </p>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Timing Correlation */}
+                          {learningAnalytics.timingCorrelation && (
+                            <div className="space-y-3">
+                              <h4 className="font-medium flex items-center gap-2">
+                                <Clock className="h-4 w-4" />
+                                Posting Time vs Performance
+                              </h4>
+                              <div className="bg-muted/50 rounded-lg p-4">
+                                <div className="flex justify-between items-center mb-2">
+                                  <span className="text-sm text-muted-foreground">
+                                    Best Performance Window
+                                  </span>
+                                  <Badge variant="default">
+                                    {learningAnalytics.timingCorrelation.bestHours.join(
+                                      ", ",
+                                    )}
+                                    :00
+                                  </Badge>
+                                </div>
+                                <p className="text-sm">
+                                  {learningAnalytics.timingCorrelation.insights}
+                                </p>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Platform Correlation */}
+                          {learningAnalytics.platformCorrelation && (
+                            <div className="space-y-3">
+                              <h4 className="font-medium flex items-center gap-2">
+                                <Share2 className="h-4 w-4" />
+                                Platform Performance
+                              </h4>
+                              <div className="grid gap-3">
+                                {Object.entries(
+                                  learningAnalytics.platformCorrelation,
+                                ).map(([platform, data]: [string, any]) => (
+                                  <div
+                                    key={platform}
+                                    className="bg-muted/50 rounded-lg p-4"
+                                  >
+                                    <div className="flex justify-between items-center mb-2">
+                                      <span className="text-sm font-medium capitalize">
+                                        {platform}
+                                      </span>
+                                      <Badge
+                                        variant={
+                                          data.avgScore > 7
+                                            ? "default"
+                                            : "secondary"
+                                        }
+                                      >
+                                        {data.avgScore.toFixed(1)}/10
+                                      </Badge>
+                                    </div>
+                                    <p className="text-xs text-muted-foreground">
+                                      {data.totalPosts} posts analyzed
+                                    </p>
+                                  </div>
                                 ))}
                               </div>
                             </div>
                           )}
-                      </div>
-                    ) : (
-                      <div className="flex items-center justify-center h-32">
-                        <Loader2 className="h-6 w-6 animate-spin" />
-                        <span className="ml-2">
-                          Loading resonance analytics...
-                        </span>
+
+                          {/* Hashtag Correlation */}
+                          {learningAnalytics.hashtagCorrelation && (
+                            <div className="space-y-3">
+                              <h4 className="font-medium flex items-center gap-2">
+                                <Hash className="h-4 w-4" />
+                                Hashtag Performance
+                              </h4>
+                              <div className="bg-muted/50 rounded-lg p-4">
+                                <div className="flex justify-between items-center mb-2">
+                                  <span className="text-sm text-muted-foreground">
+                                    Optimal Hashtag Count
+                                  </span>
+                                  <Badge variant="default">
+                                    {
+                                      learningAnalytics.hashtagCorrelation
+                                        .optimalCount
+                                    }
+                                  </Badge>
+                                </div>
+                                {learningAnalytics.hashtagCorrelation
+                                  .topPerformingTags.length > 0 && (
+                                  <div className="mt-3">
+                                    <p className="text-xs text-muted-foreground mb-2">
+                                      Top performing tags:
+                                    </p>
+                                    <div className="flex flex-wrap gap-1">
+                                      {learningAnalytics.hashtagCorrelation.topPerformingTags
+                                        .slice(0, 5)
+                                        .map((tag, index) => (
+                                          <Badge
+                                            key={index}
+                                            variant="outline"
+                                            className="text-xs"
+                                          >
+                                            #{tag}
+                                          </Badge>
+                                        ))}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </div>
+                ) : (
+                  <EmptyState
+                    icon={<TrendingUp />}
+                    title="No Correlation Data Yet"
+                    description="Performance correlation analysis will appear here as you post more content and track its performance."
+                  />
+                )}
+              </TabsContent>
+
+              <TabsContent value="intelligence" className="space-y-6">
+                {/* Comment Intelligence Tab (detailed sentiment, cluster, and intent analysis) */}
+                <Card>
+                  <CardHeader className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                    <div>
+                      <CardTitle className="flex items-center gap-2">
+                        <Brain className="h-5 w-5" />
+                        Comment Intelligence
+                      </CardTitle>
+                      <CardDescription>
+                        Sentiment, topics, and intent distilled from your latest
+                        comments.
+                      </CardDescription>
+                    </div>
+                    {accounts && accounts.length > 0 && (
+                      <div className="flex gap-2">
+                        <Button
+                          onClick={() => fetchComments()}
+                          disabled={isFetchingComments}
+                        >
+                          {isFetchingComments ? "Analyzing…" : "Deep Analyze"}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          onClick={handleRefreshAll}
+                          disabled={isHeaderRefreshing}
+                        >
+                          <RefreshCw className="h-4 w-4 mr-2" />
+                          {isHeaderRefreshing ? "Refreshing…" : "Refresh Data"}
+                        </Button>
                       </div>
                     )}
-                  </CardContent>
-                </Card>
-
-                {/* Predictive Analytics */}
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <Zap className="h-5 w-5" />
-                      Predictive Analytics
-                    </CardTitle>
-                    <CardDescription>
-                      AI-powered predictions for content performance and trends
-                    </CardDescription>
                   </CardHeader>
-                  <CardContent>
-                    <div className="text-center py-8">
-                      <Brain className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
-                      <p className="text-muted-foreground mb-4">
-                        Advanced predictive analytics coming soon
-                      </p>
-                      <Button variant="outline" size="sm">
-                        Request Early Access
-                      </Button>
+                  <CardContent className="space-y-6">
+                    {/* Empty guidance */}
+                    {accounts &&
+                      accounts.length > 0 &&
+                      summary &&
+                      summary.commentSampleSize === 0 && (
+                        <div className="bg-muted/40 border border-border rounded-md p-4 flex items-start gap-3">
+                          <MessageSquare className="h-5 w-5 mt-0.5 text-muted-foreground" />
+                          <div className="text-sm">
+                            <div className="font-medium mb-1">
+                              No recent comments analyzed yet
+                            </div>
+                            <div className="text-muted-foreground mb-2">
+                              Tap Deep Analyze to fetch and analyze the latest
+                              comments. We’ll auto-fill sentiment, topics, and
+                              intent here.
+                            </div>
+                            <div className="flex gap-2">
+                              <Button
+                                size="sm"
+                                onClick={() => fetchComments()}
+                                disabled={isFetchingComments}
+                              >
+                                {isFetchingComments
+                                  ? "Analyzing…"
+                                  : "Deep Analyze"}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={handleRefreshAll}
+                                disabled={isHeaderRefreshing}
+                              >
+                                {isHeaderRefreshing
+                                  ? "Refreshing…"
+                                  : "Refresh Data"}
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                    {/* Intent Distribution */}
+                    <div>
+                      <h4 className="font-medium mb-2">Intent Distribution</h4>
+                      {summary?.intentBreakdown &&
+                      Object.keys(summary.intentBreakdown).length > 0 ? (
+                        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+                          {Object.entries(summary.intentBreakdown)
+                            .sort((a, b) => (b[1] as number) - (a[1] as number))
+                            .map(([intent, count]) => (
+                              <div
+                                key={intent}
+                                className="bg-muted/50 p-3 rounded-md flex items-center justify-between"
+                              >
+                                <span className="text-sm capitalize">
+                                  {intent.replaceAll("_", " ")}
+                                </span>
+                                <Badge variant="secondary">
+                                  {count as number}
+                                </Badge>
+                              </div>
+                            ))}
+                        </div>
+                      ) : (
+                        <p className="text-sm text-muted-foreground">
+                          No intent data yet.
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Topic Clusters */}
+                    <div>
+                      <h4 className="font-medium mb-2">Top Topic Clusters</h4>
+                      {summary?.topicClusters &&
+                      summary.topicClusters.length > 0 ? (
+                        <div className="space-y-3">
+                          {summary.topicClusters.map(
+                            (cluster: any, idx: number) => (
+                              <div key={idx} className="border rounded-lg p-4">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div>
+                                    <div className="font-semibold capitalize">
+                                      {cluster.label}
+                                    </div>
+                                    <div className="text-xs text-muted-foreground">
+                                      {cluster.count} comments
+                                    </div>
+                                  </div>
+                                  <div className="flex flex-wrap gap-1">
+                                    {(cluster.keywords || []).map(
+                                      (kw: string, i: number) => (
+                                        <Badge
+                                          key={i}
+                                          variant="outline"
+                                          className="text-xs"
+                                        >
+                                          {kw}
+                                        </Badge>
+                                      ),
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+                                  <div className="bg-muted/30 rounded p-3">
+                                    <div className="text-xs font-medium mb-1">
+                                      Sentiment
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                      {Object.entries(
+                                        cluster.sentimentDistribution || {},
+                                      ).map(
+                                        (
+                                          [s, val]: [string, any],
+                                          i: number,
+                                        ) => (
+                                          <Badge
+                                            key={i}
+                                            variant="secondary"
+                                            className="text-xs capitalize"
+                                          >
+                                            {s}: {val as number}
+                                          </Badge>
+                                        ),
+                                      )}
+                                    </div>
+                                  </div>
+                                  <div className="bg-muted/30 rounded p-3">
+                                    <div className="text-xs font-medium mb-1">
+                                      Intent
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                      {Object.entries(
+                                        cluster.intentDistribution || {},
+                                      ).map(
+                                        (
+                                          [s, val]: [string, any],
+                                          i: number,
+                                        ) => (
+                                          <Badge
+                                            key={i}
+                                            variant="secondary"
+                                            className="text-xs capitalize"
+                                          >
+                                            {s.replaceAll("_", " ")}:{" "}
+                                            {val as number}
+                                          </Badge>
+                                        ),
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                                {cluster.examples &&
+                                  cluster.examples.length > 0 && (
+                                    <div className="mt-3">
+                                      <div className="text-xs font-medium mb-1">
+                                        Examples
+                                      </div>
+                                      <ul className="list-disc list-inside text-sm text-muted-foreground space-y-1">
+                                        {cluster.examples.map(
+                                          (ex: string, i: number) => (
+                                            <li key={i}>{ex}</li>
+                                          ),
+                                        )}
+                                      </ul>
+                                    </div>
+                                  )}
+                              </div>
+                            ),
+                          )}
+                        </div>
+                      ) : (
+                        <p className="text-sm text-muted-foreground">
+                          No topic clusters yet.
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="text-xs text-muted-foreground">
+                      Analyzed last {summary?.timeRangeDays ?? 90} days · Sample
+                      size: {summary?.commentSampleSize ?? 0}
                     </div>
                   </CardContent>
                 </Card>
-              </div>
-            </TabsContent>
-          </Tabs>
-        </>
-      )}
+              </TabsContent>
+
+              <TabsContent value="comments" className="space-y-6">
+                <div className="grid gap-6">
+                  {/* Brand Signals Overview */}
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2">
+                        <TrendingUp className="h-5 w-5" />
+                        Brand Signals Overview
+                      </CardTitle>
+                      <CardDescription>
+                        Real-time insights into your brand performance and
+                        audience engagement
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      {brandSignals ? (
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                          <div className="bg-muted/50 p-4 rounded-lg">
+                            <div className="text-2xl font-bold text-primary">
+                              {brandSignals?.behaviorInsights?.averageResonance?.toFixed(
+                                1,
+                              ) || "N/A"}
+                            </div>
+                            <div className="text-sm text-muted-foreground">
+                              Overall Brand Score
+                            </div>
+                          </div>
+                          <div className="bg-muted/50 p-4 rounded-lg">
+                            <div className="text-2xl font-bold text-green-600">
+                              {brandSignals?.behaviorInsights
+                                ?.interactionStyle || "N/A"}
+                            </div>
+                            <div className="text-sm text-muted-foreground">
+                              Engagement Trend
+                            </div>
+                          </div>
+                          <div className="bg-muted/50 p-4 rounded-lg">
+                            <div className="text-2xl font-bold text-blue-600">
+                              {brandSignals?.behaviorInsights?.totalEvents ||
+                                "N/A"}
+                            </div>
+                            <div className="text-sm text-muted-foreground">
+                              Audience Growth
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-center h-32">
+                          <Loader2 className="h-6 w-6 animate-spin" />
+                          <span className="ml-2">Loading brand signals...</span>
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+
+                  {/* Feedback Analytics */}
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2">
+                        <MessageSquare className="h-5 w-5" />
+                        Feedback Analytics
+                      </CardTitle>
+                      <CardDescription>
+                        Analysis of user feedback and response patterns
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      {feedbackAnalytics ? (
+                        <div className="space-y-4">
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div className="bg-muted/50 p-4 rounded-lg">
+                              <div className="text-lg font-semibold">
+                                {feedbackAnalytics?.summary?.totalFeedback || 0}
+                              </div>
+                              <div className="text-sm text-muted-foreground">
+                                Total Feedback Items
+                              </div>
+                            </div>
+                            <div className="bg-muted/50 p-4 rounded-lg">
+                              <div className="text-lg font-semibold text-green-600">
+                                {feedbackAnalytics?.summary?.positiveRate?.toFixed(
+                                  1,
+                                ) || 0}
+                                %
+                              </div>
+                              <div className="text-sm text-muted-foreground">
+                                Positive Feedback
+                              </div>
+                            </div>
+                          </div>
+                          {feedbackAnalytics?.summary?.mostCommonTags && (
+                            <div>
+                              <h4 className="font-medium mb-2">
+                                Feedback Categories
+                              </h4>
+                              <div className="space-y-2">
+                                {feedbackAnalytics.summary.mostCommonTags.map(
+                                  (tag) => (
+                                    <div
+                                      key={tag.tag}
+                                      className="flex justify-between items-center"
+                                    >
+                                      <span className="capitalize">
+                                        {tag.tag}
+                                      </span>
+                                      <Badge variant="secondary">
+                                        {tag.count}
+                                      </Badge>
+                                    </div>
+                                  ),
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-center h-32">
+                          <Loader2 className="h-6 w-6 animate-spin" />
+                          <span className="ml-2">
+                            Loading feedback analytics...
+                          </span>
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+
+                  {/* Resonance Analytics */}
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2">
+                        <Target className="h-5 w-5" />
+                        Content Resonance Analytics
+                      </CardTitle>
+                      <CardDescription>
+                        How well your content resonates with your audience
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      {resonanceAnalytics ? (
+                        <div className="space-y-4">
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <div className="bg-muted/50 p-4 rounded-lg">
+                              <div className="text-lg font-semibold text-primary">
+                                {resonanceAnalytics?.averageResonance?.toFixed(
+                                  2,
+                                ) || "N/A"}
+                              </div>
+                              <div className="text-sm text-muted-foreground">
+                                Avg Resonance Score
+                              </div>
+                            </div>
+                            <div className="bg-muted/50 p-4 rounded-lg">
+                              <div className="text-lg font-semibold text-blue-600">
+                                {resonanceAnalytics?.highPerformingContent || 0}
+                              </div>
+                              <div className="text-sm text-muted-foreground">
+                                Top Performing Content
+                              </div>
+                            </div>
+                            <div className="bg-muted/50 p-4 rounded-lg">
+                              <div className="text-lg font-semibold text-green-600">
+                                {resonanceAnalytics?.insights
+                                  ?.improvementTrend || "N/A"}
+                              </div>
+                              <div className="text-sm text-muted-foreground">
+                                Improvement Trend
+                              </div>
+                            </div>
+                          </div>
+                          {resonanceAnalytics?.breakdown &&
+                            Object.keys(resonanceAnalytics.breakdown).length >
+                              0 && (
+                              <div>
+                                <h4 className="font-medium mb-2">
+                                  Content Type Performance
+                                </h4>
+                                <div className="flex flex-wrap gap-2">
+                                  {Object.entries(
+                                    resonanceAnalytics.breakdown,
+                                  ).map(([type, data], index) => (
+                                    <Badge key={index} variant="outline">
+                                      {type}: {(data as any).count}
+                                    </Badge>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-center h-32">
+                          <Loader2 className="h-6 w-6 animate-spin" />
+                          <span className="ml-2">
+                            Loading resonance analytics...
+                          </span>
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+
+                  {/* Predictive Analytics */}
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2">
+                        <Zap className="h-5 w-5" />
+                        Predictive Analytics
+                      </CardTitle>
+                      <CardDescription>
+                        AI-powered predictions for content performance and
+                        trends
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="text-center py-8">
+                        <Brain className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
+                        <p className="text-muted-foreground mb-4">
+                          Advanced predictive analytics coming soon
+                        </p>
+                        <Button variant="outline" size="sm">
+                          Request Early Access
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+                {/* Comment Intelligence Overview */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <MessageSquare className="h-5 w-5" />
+                      Comment Intelligence
+                    </CardTitle>
+                    <CardDescription>
+                      A deep dive into what people are saying: sentiment,
+                      topics, and intent.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-6">
+                    {/* Intent Distribution */}
+                    <div>
+                      <h4 className="font-medium mb-2">Intent Distribution</h4>
+                      {summary?.intentBreakdown &&
+                      Object.keys(summary.intentBreakdown).length > 0 ? (
+                        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+                          {Object.entries(summary.intentBreakdown)
+                            .sort((a, b) => (b[1] as number) - (a[1] as number))
+                            .map(([intent, count]) => (
+                              <div
+                                key={intent}
+                                className="bg-muted/50 p-3 rounded-md flex items-center justify-between"
+                              >
+                                <span className="text-sm capitalize">
+                                  {intent.replaceAll("_", " ")}
+                                </span>
+                                <Badge variant="secondary">
+                                  {count as number}
+                                </Badge>
+                              </div>
+                            ))}
+                        </div>
+                      ) : (
+                        <p className="text-sm text-muted-foreground">
+                          No intent data yet.
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Topic Clusters */}
+                    <div>
+                      <h4 className="font-medium mb-2">Top Topic Clusters</h4>
+                      {summary?.topicClusters &&
+                      summary.topicClusters.length > 0 ? (
+                        <div className="space-y-3">
+                          {summary.topicClusters.map(
+                            (cluster: any, idx: number) => (
+                              <div key={idx} className="border rounded-lg p-4">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div>
+                                    <div className="font-semibold capitalize">
+                                      {cluster.label}
+                                    </div>
+                                    <div className="text-xs text-muted-foreground">
+                                      {cluster.count} comments
+                                    </div>
+                                  </div>
+                                  <div className="flex flex-wrap gap-1">
+                                    {(cluster.keywords || []).map(
+                                      (kw: string, i: number) => (
+                                        <Badge
+                                          key={i}
+                                          variant="outline"
+                                          className="text-xs"
+                                        >
+                                          {kw}
+                                        </Badge>
+                                      ),
+                                    )}
+                                  </div>
+                                </div>
+                                {/* Sentiment vs Intent breakdown */}
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+                                  <div className="bg-muted/30 rounded p-3">
+                                    <div className="text-xs font-medium mb-1">
+                                      Sentiment
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                      {Object.entries(
+                                        cluster.sentimentDistribution || {},
+                                      ).map(
+                                        (
+                                          [s, val]: [string, any],
+                                          i: number,
+                                        ) => (
+                                          <Badge
+                                            key={i}
+                                            variant="secondary"
+                                            className="text-xs capitalize"
+                                          >
+                                            {s}: {val as number}
+                                          </Badge>
+                                        ),
+                                      )}
+                                    </div>
+                                  </div>
+                                  <div className="bg-muted/30 rounded p-3">
+                                    <div className="text-xs font-medium mb-1">
+                                      Intent
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                      {Object.entries(
+                                        cluster.intentDistribution || {},
+                                      ).map(
+                                        (
+                                          [s, val]: [string, any],
+                                          i: number,
+                                        ) => (
+                                          <Badge
+                                            key={i}
+                                            variant="secondary"
+                                            className="text-xs capitalize"
+                                          >
+                                            {s.replaceAll("_", " ")}:{" "}
+                                            {val as number}
+                                          </Badge>
+                                        ),
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                                {/* Example comments */}
+                                {cluster.examples &&
+                                  cluster.examples.length > 0 && (
+                                    <div className="mt-3">
+                                      <div className="text-xs font-medium mb-1">
+                                        Examples
+                                      </div>
+                                      <ul className="list-disc list-inside text-sm text-muted-foreground space-y-1">
+                                        {cluster.examples.map(
+                                          (ex: string, i: number) => (
+                                            <li key={i}>{ex}</li>
+                                          ),
+                                        )}
+                                      </ul>
+                                    </div>
+                                  )}
+                              </div>
+                            ),
+                          )}
+                        </div>
+                      ) : (
+                        <p className="text-sm text-muted-foreground">
+                          No topic clusters yet.
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="text-xs text-muted-foreground">
+                      Analyzed last {summary?.timeRangeDays ?? 90} days · Sample
+                      size: {summary?.commentSampleSize ?? 0}
+                    </div>
+                  </CardContent>
+                </Card>
+              </TabsContent>
+            </Tabs>
+          </>
+        )}
+      </>
     </div>
   );
 }
@@ -28539,6 +36444,10 @@ function MainApp() {
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignUpPage />} />
+        <Route path="/features" element={<LandingPage />} />
+        <Route path="/solutions" element={<LandingPage />} />
+        <Route path="/pricing" element={<LandingPage />} />
+        <Route path="/security" element={<LandingPage />} />
         <Route path="*" element={<LandingPage />} />
       </Routes>
     );
@@ -28864,11 +36773,7 @@ const StrategySummary = ({ summary }: { summary: any }) => {
 };
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-function ContentDiscoveryTab({
-  setPreviewContentId,
-}: {
-  setPreviewContentId: (id: string | null) => void;
-}) {
+function ContentDiscoveryTab() {
   // Selected day for Day Focus view
   const [selectedDayIndex, setSelectedDayIndex] = useState(0);
   // Keyboard navigation for desktop
@@ -28890,12 +36795,9 @@ function ContentDiscoveryTab({
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
-  const [summaryOpen, setSummaryOpen] = useState<boolean>(
-    !(window.innerWidth < 768),
-  );
-  useEffect(() => {
-    setSummaryOpen(!isMobile);
-  }, [isMobile]);
+  const [summaryOpen, setSummaryOpen] = useState<boolean>(false);
+
+  const [simpleMode, setSimpleMode] = useState(true);
 
   const [feedbackInfo, setFeedbackInfo] = useState<{
     post: any;
@@ -28911,6 +36813,8 @@ function ContentDiscoveryTab({
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, []);
+
+  const navigate = useNavigate();
 
   const { data, isLoading, error, refetch } = useQuery(
     ["contentStrategy"],
@@ -28998,9 +36902,16 @@ function ContentDiscoveryTab({
     inferRPCInputType<"generateContentFromRecommendation">
   >(apiClient.generateContentFromRecommendation, {
     onSuccess: (data) => {
-      setPreviewContentId(
-        (data as { taskId: string; contentId: string }).contentId,
-      );
+      const contentId = (data as { taskId: string; contentId: string })
+        .contentId;
+      navigate("/create", {
+        state: {
+          activeTab: "generatedContent",
+          inlinePreviewContentId: contentId,
+        },
+      });
+      // Ensure new pillars appear immediately if generation created a new one
+      queryClient.invalidateQueries({ queryKey: ["contentPillars"] });
       queryClient.invalidateQueries(queryKeys.generatedContent());
     },
     onError: (error) => {
@@ -29055,6 +36966,31 @@ function ContentDiscoveryTab({
           title: "Couldn't get tactics",
           description:
             error instanceof Error ? error.message : "Try again in a moment.",
+          variant: "destructive",
+        });
+      },
+    },
+  );
+
+  // One-tap: save available day options into Drafts
+  const createDraftsMutation = useMutation(
+    apiClient.createDraftsFromStrategyDay,
+    {
+      onSuccess: (res: any) => {
+        const count = typeof res?.created === "number" ? res.created : 0;
+        toast({
+          title: count > 0 ? `Saved to Drafts` : "Nothing to save",
+          description:
+            count > 0
+              ? `${count} draft${count === 1 ? "" : "s"} created from this day.`
+              : "This day has no text, image prompt, or video script yet.",
+        });
+      },
+      onError: (error: unknown) => {
+        toast({
+          title: "Could not save to Drafts",
+          description:
+            error instanceof Error ? error.message : "Please try again.",
           variant: "destructive",
         });
       },
@@ -29208,7 +37144,10 @@ function ContentDiscoveryTab({
   }
 
   return (
-    <div className={`${isMobile ? "space-y-4" : "space-y-8"}`}>
+    <div
+      className={`${isMobile ? "space-y-4 pb-24 pt-1" : "space-y-8"}`}
+      style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 6rem)" }}
+    >
       <div
         className={`flex items-center gap-2 ${isMobile ? "justify-between" : "justify-end gap-4"}`}
       >
@@ -29240,23 +37179,58 @@ function ContentDiscoveryTab({
 
       <Collapsible open={summaryOpen} onOpenChange={setSummaryOpen}>
         <div className="flex items-center justify-between py-1">
-          <h2 className="text-sm font-medium text-muted-foreground">
-            Content Strategy Summary
-          </h2>
           <CollapsibleTrigger asChild>
-            <Button variant="ghost" size="sm" className="h-8">
-              {summaryOpen ? "Hide" : "Show"}
-            </Button>
+            <button className="flex items-center gap-2 px-3 py-2 rounded-lg border bg-muted/40 hover:bg-muted/60 transition-colors">
+              <Sparkles className="h-4 w-4 text-primary" />
+              <span className="text-sm font-medium">
+                Strategy • {data?.strategySummary?.keyThemes?.length ?? 0}{" "}
+                themes
+              </span>
+              <span className="text-xs text-muted-foreground hidden sm:inline">
+                Tap to view
+              </span>
+            </button>
           </CollapsibleTrigger>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setSummaryOpen(true)}
+              className="h-8"
+            >
+              Edit
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => refreshStrategyMutation()}
+              disabled={isRefreshingStrategy}
+              className="h-8"
+            >
+              {isRefreshingStrategy ? (
+                <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="mr-2 h-4 w-4" />
+              )}
+              Refresh
+            </Button>
+          </div>
         </div>
+        <p className="text-xs text-muted-foreground mt-1">
+          Tip: Edit your themes and audience any time — your week updates
+          automatically.
+        </p>
         <CollapsibleContent>
           <StrategySummary summary={data.strategySummary} />
         </CollapsibleContent>
       </Collapsible>
 
       {/* Week Overview Bar */}
-      <div className="sticky top-0 z-20 bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-        <div className="overflow-x-auto pb-2 snap-x snap-mandatory px-1">
+      <div className="sticky top-16 sm:top-20 z-30 bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60 relative">
+        <div
+          className="overflow-x-auto pb-2 snap-x snap-mandatory px-1 scroll-px-3"
+          style={{ WebkitOverflowScrolling: "touch" }}
+        >
           <div className="flex gap-2 min-w-max py-2">
             {data.calendar.map((day: any, idx: number) => {
               const date = new Date(day.date);
@@ -29282,7 +37256,7 @@ function ContentDiscoveryTab({
                       void error;
                     }
                   }}
-                  className={`rounded-xl border px-3 py-2 text-left transition-colors min-w-[120px] touch-manipulation snap-start ${
+                  className={`rounded-xl border px-3 py-2.5 min-h-[44px] text-left transition-colors min-w-[104px] touch-manipulation snap-start ${
                     isActive
                       ? "border-primary ring-2 ring-primary/40 bg-primary/10"
                       : count === 0
@@ -29371,7 +37345,7 @@ function ContentDiscoveryTab({
                 >
                   <div className="flex items-center justify-between">
                     <div>
-                      <h3 className="font-semibold text-base sm:text-lg">
+                      <h3 className="font-semibold text-lg sm:text-xl">
                         {d.dayOfWeek}
                       </h3>
                       <p className="text-sm text-muted-foreground">
@@ -29382,6 +37356,172 @@ function ContentDiscoveryTab({
                       </p>
                     </div>
                     <div className="flex items-center gap-2">
+                      <div className="hidden sm:flex items-center gap-2 mr-1">
+                        <span className="text-[11px] text-muted-foreground">
+                          Simple view
+                        </span>
+                        <Switch
+                          id="simple-view"
+                          checked={simpleMode}
+                          onCheckedChange={setSimpleMode}
+                        />
+                      </div>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label="Day actions"
+                            className="h-8 w-8"
+                          >
+                            <MoreHorizontal className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-56">
+                          <DropdownMenuItem
+                            onClick={() =>
+                              requestTacticsForDay(selectedDayIndex)
+                            }
+                            disabled={
+                              dayTacticsMutation.isLoading &&
+                              pendingDayIndexRef.current === selectedDayIndex
+                            }
+                          >
+                            {dayTacticsMutation.isLoading &&
+                            pendingDayIndexRef.current === selectedDayIndex
+                              ? "Generating tactics…"
+                              : dayTacticsMap[selectedDayIndex]?.length
+                                ? "Regenerate tactics"
+                                : "Get tactics"}
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={() => {
+                              try {
+                                const day: any = d;
+                                const posts: any[] = Array.isArray(day?.posts)
+                                  ? day.posts
+                                  : [];
+                                const textPost =
+                                  posts.find(
+                                    (p) => p && (p.text || p.caption),
+                                  ) || posts[0];
+                                const imagePost = posts.find(
+                                  (p) => p && p.assetPrompt,
+                                );
+                                const videoPost = posts.find(
+                                  (p) => p && p.videoScript,
+                                );
+
+                                const parts: string[] = [];
+                                if (
+                                  textPost &&
+                                  (textPost.text || textPost.caption)
+                                ) {
+                                  parts.push(
+                                    [
+                                      "Text Post",
+                                      textPost.title
+                                        ? `Title: ${textPost.title}`
+                                        : null,
+                                      (textPost.text ||
+                                        textPost.caption) as string,
+                                    ]
+                                      .filter(Boolean)
+                                      .join("\n"),
+                                  );
+                                }
+                                if (imagePost?.assetPrompt) {
+                                  parts.push(
+                                    `Image Prompt\n${imagePost.assetPrompt}`,
+                                  );
+                                }
+                                if (videoPost?.videoScript) {
+                                  parts.push(
+                                    `Video Script\n${videoPost.videoScript}`,
+                                  );
+                                }
+
+                                const tagSet = new Set<string>();
+                                for (const p of posts) {
+                                  const hs = p?.hashtags;
+                                  if (!hs) continue;
+                                  if (Array.isArray(hs)) {
+                                    hs.forEach(
+                                      (t: string) =>
+                                        t &&
+                                        tagSet.add(
+                                          t.startsWith("#")
+                                            ? t
+                                            : `#${t.replace(/^#/, "")}`,
+                                        ),
+                                    );
+                                  } else if (typeof hs === "object") {
+                                    Object.values(hs)
+                                      .flat()
+                                      .forEach((t: any) => {
+                                        if (typeof t === "string" && t.trim()) {
+                                          tagSet.add(
+                                            t.startsWith("#")
+                                              ? t
+                                              : `#${t.replace(/^#/, "")}`,
+                                          );
+                                        }
+                                      });
+                                  } else if (typeof hs === "string") {
+                                    hs.split(/[\s,]+/).forEach(
+                                      (t: string) =>
+                                        t &&
+                                        tagSet.add(
+                                          t.startsWith("#")
+                                            ? t
+                                            : `#${t.replace(/^#/, "")}`,
+                                        ),
+                                    );
+                                  }
+                                }
+                                const tagsJoined = Array.from(tagSet).join(" ");
+                                if (tagsJoined)
+                                  parts.push(`Hashtags\n${tagsJoined}`);
+
+                                const payload = parts.join("\n\n");
+                                if (payload.trim().length === 0) {
+                                  toast({
+                                    title: "Nothing to copy yet",
+                                    description:
+                                      "This day has no assets available.",
+                                  });
+                                  return;
+                                }
+                                copy(payload);
+                                toast({
+                                  title: "Assets copied",
+                                  description:
+                                    "Text, image prompt, video script, and hashtags ready to paste.",
+                                });
+                              } catch {
+                                toast({
+                                  title: "Could not copy assets",
+                                  variant: "destructive",
+                                });
+                              }
+                            }}
+                          >
+                            Copy All Assets
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={() =>
+                              createDraftsMutation.mutate({
+                                dayIndex: selectedDayIndex,
+                              } as any)
+                            }
+                            disabled={createDraftsMutation.isLoading}
+                          >
+                            {createDraftsMutation.isLoading
+                              ? "Saving…"
+                              : "Save All to Drafts"}
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                       <Button
                         variant="ghost"
                         size={isMobile ? "sm" : "icon"}
@@ -29429,32 +37569,6 @@ function ContentDiscoveryTab({
                       {(d.posts?.length ?? 0) === 1 ? "" : "s"}
                     </span>
                   </div>
-                  <div className="flex items-center gap-2 mt-3">
-                    <Button
-                      size={isMobile ? "sm" : "default"}
-                      variant="outline"
-                      onClick={() => requestTacticsForDay(selectedDayIndex)}
-                      disabled={
-                        dayTacticsMutation.isLoading &&
-                        pendingDayIndexRef.current === selectedDayIndex
-                      }
-                    >
-                      {dayTacticsMutation.isLoading &&
-                      pendingDayIndexRef.current === selectedDayIndex
-                        ? "Generating tactics…"
-                        : dayTacticsMap[selectedDayIndex]?.length
-                          ? "Regenerate tactics"
-                          : "Get tactics"}
-                    </Button>
-                    <a href="/schedule" className="inline-flex">
-                      <Button
-                        size={isMobile ? "sm" : "default"}
-                        variant="secondary"
-                      >
-                        Open Schedule
-                      </Button>
-                    </a>
-                  </div>
                 </div>
               );
             })()}
@@ -29467,37 +37581,113 @@ function ContentDiscoveryTab({
             )}
 
             <div className="space-y-2">
-              {data.calendar[selectedDayIndex].posts?.length ? (
-                data.calendar[selectedDayIndex].posts.map((post: any) => (
-                  <PostCard
-                    key={post.id}
-                    post={post}
-                    highlighted={post.id === highlightedPostId}
-                    dayIndex={selectedDayIndex}
-                    onGenerate={(updated) =>
-                      generateContentMutation.mutate({
-                        recommendation: updated,
-                      })
-                    }
-                    isGenerating={
-                      generateContentMutation.isLoading &&
-                      generateContentMutation.variables?.recommendation.id ===
-                        post.id
-                    }
-                    onFeedback={(p, feedbackType) => {
-                      if (feedbackType === "love" || feedbackType === "like") {
-                        setPostedInfo({ post: p, type: feedbackType });
-                      } else {
-                        setFeedbackInfo({ post: p, type: feedbackType });
+              {(() => {
+                const day = data.calendar[selectedDayIndex];
+                const posts: any[] = Array.isArray(day?.posts) ? day.posts : [];
+                if (!posts.length)
+                  return (
+                    <div className="text-sm text-muted-foreground">
+                      No posts suggested for this day.
+                    </div>
+                  );
+                const enriched = posts.map((p: any, i: number) => ({
+                  post: p,
+                  index: i,
+                  score: Number(p?.viralityScore) || 0,
+                }));
+                enriched.sort((a, b) => b.score - a.score);
+                const top = enriched[0]!;
+                const rest = enriched.slice(1);
+                return (
+                  <>
+                    <div className="text-xs font-medium text-muted-foreground px-1">
+                      Top pick
+                    </div>
+                    <PostCard
+                      key={top.post.id}
+                      post={top.post}
+                      highlighted={top.post.id === highlightedPostId}
+                      dayIndex={selectedDayIndex}
+                      onGenerate={(updated) =>
+                        generateContentMutation.mutate({
+                          recommendation: updated,
+                        })
                       }
-                    }}
-                  />
-                ))
-              ) : (
-                <div className="text-sm text-muted-foreground">
-                  No posts suggested for this day.
-                </div>
-              )}
+                      isGenerating={
+                        generateContentMutation.isLoading &&
+                        generateContentMutation.variables?.recommendation.id ===
+                          top.post.id
+                      }
+                      onFeedback={(p, feedbackType) => {
+                        if (
+                          feedbackType === "love" ||
+                          feedbackType === "like"
+                        ) {
+                          setPostedInfo({ post: p, type: feedbackType });
+                        } else {
+                          setFeedbackInfo({ post: p, type: feedbackType });
+                        }
+                      }}
+                      simple={simpleMode}
+                    />
+                    {rest.length > 0 && (
+                      <Collapsible defaultOpen={!isMobile}>
+                        <div className="flex items-center justify-between mt-2 px-1">
+                          <div className="text-xs font-medium text-muted-foreground">
+                            More ideas ({rest.length})
+                          </div>
+                          <CollapsibleTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size={isMobile ? "sm" : "sm"}
+                              className="h-8"
+                            >
+                              Toggle
+                            </Button>
+                          </CollapsibleTrigger>
+                        </div>
+                        <CollapsibleContent className="space-y-2 mt-1">
+                          {rest.map(({ post }) => (
+                            <PostCard
+                              key={post.id}
+                              post={post}
+                              highlighted={post.id === highlightedPostId}
+                              dayIndex={selectedDayIndex}
+                              onGenerate={(updated) =>
+                                generateContentMutation.mutate({
+                                  recommendation: updated,
+                                })
+                              }
+                              isGenerating={
+                                generateContentMutation.isLoading &&
+                                generateContentMutation.variables
+                                  ?.recommendation.id === post.id
+                              }
+                              onFeedback={(p, feedbackType) => {
+                                if (
+                                  feedbackType === "love" ||
+                                  feedbackType === "like"
+                                ) {
+                                  setPostedInfo({
+                                    post: p,
+                                    type: feedbackType,
+                                  });
+                                } else {
+                                  setFeedbackInfo({
+                                    post: p,
+                                    type: feedbackType,
+                                  });
+                                }
+                              }}
+                              simple={simpleMode}
+                            />
+                          ))}
+                        </CollapsibleContent>
+                      </Collapsible>
+                    )}
+                  </>
+                );
+              })()}
             </div>
           </CardContent>
         </Card>
@@ -29508,8 +37698,7 @@ function ContentDiscoveryTab({
         <CardHeader className={isMobile ? "pb-3" : ""}>
           <div className="flex items-center justify-between">
             <CardTitle className={isMobile ? "text-base" : "text-lg"}>
-              Engagement Tactics for{" "}
-              {data.calendar[selectedDayIndex]?.dayOfWeek}
+              Tactics for {data.calendar[selectedDayIndex]?.dayOfWeek}
             </CardTitle>
             <Button
               size={isMobile ? "sm" : "default"}
@@ -29596,6 +37785,7 @@ const PostCard = ({
   onFeedback,
   highlighted,
   dayIndex,
+  simple,
 }: {
   post: any;
   onGenerate: (post: any) => void;
@@ -29606,6 +37796,7 @@ const PostCard = ({
   ) => void;
   highlighted?: boolean;
   dayIndex: number;
+  simple?: boolean;
 }) => {
   const cardRef = useRef<HTMLDivElement>(null);
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
@@ -29752,7 +37943,7 @@ const PostCard = ({
               onClick={() => setDetailsOpen((o) => !o)}
             >
               <span className="flex items-center gap-1 text-xs">
-                {detailsOpen ? "Hide details" : "Show details"}
+                {detailsOpen ? "Hide" : "Details"}
                 {detailsOpen ? (
                   <ChevronUp className="h-3 w-3" />
                 ) : (
@@ -29761,7 +37952,7 @@ const PostCard = ({
               </span>
             </Button>
           </div>
-          {detailsOpen && (
+          {detailsOpen && !simple && (
             <div className="space-y-2 pt-2">
               <div>
                 <span className="text-foreground font-medium text-xs">
@@ -29820,39 +38011,87 @@ const PostCard = ({
                   </div>
                 </div>
               )}
+              {post.assetPrompt && (
+                <div className="mt-2">
+                  <span className="text-foreground font-medium text-xs">
+                    Image Prompt:
+                  </span>
+                  <div className="mt-1 p-2 bg-emerald-50 border border-emerald-200 rounded-md dark:bg-emerald-950 dark:border-emerald-800">
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="text-xs leading-relaxed whitespace-pre-wrap text-emerald-800 dark:text-emerald-300 flex-1">
+                        {post.assetPrompt}
+                      </p>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        className="h-7 text-xs flex-shrink-0"
+                        onClick={() => copy(post.assetPrompt)}
+                      >
+                        Copy
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {post.videoScript && (
+                <div className="mt-2">
+                  <span className="text-foreground font-medium text-xs">
+                    Video Script:
+                  </span>
+                  <div className="mt-1 p-2 bg-indigo-50 border border-indigo-200 rounded-md dark:bg-indigo-950 dark:border-indigo-800">
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="text-xs leading-relaxed whitespace-pre-wrap text-indigo-800 dark:text-indigo-300 flex-1">
+                        {post.videoScript}
+                      </p>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        className="h-7 text-xs flex-shrink-0"
+                        onClick={() => copy(post.videoScript)}
+                      >
+                        Copy
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
-          <div className="flex items-center justify-between pt-2">
-            <div className="flex items-center gap-2">
-              <Switch
-                id={`quick-edit-${post.id}`}
-                checked={isEditing}
-                onCheckedChange={setIsEditing}
-              />
-              <Label htmlFor={`quick-edit-${post.id}`} className="text-xs">
-                Quick edit
-              </Label>
-            </div>
-          </div>
-          {isEditing && (
-            <div className="space-y-2 pt-2">
-              <div className="space-y-1">
-                <Label className="text-xs">Title</Label>
-                <Input
-                  value={editTitle}
-                  onChange={(e) => setEditTitle(e.target.value)}
-                  className="h-8 text-xs"
-                />
+          {!simple && (
+            <>
+              <div className="flex items-center justify-between pt-2">
+                <div className="flex items-center gap-2">
+                  <Switch
+                    id={`quick-edit-${post.id}`}
+                    checked={isEditing}
+                    onCheckedChange={setIsEditing}
+                  />
+                  <Label htmlFor={`quick-edit-${post.id}`} className="text-xs">
+                    Quick edit title & brief
+                  </Label>
+                </div>
               </div>
-              <div className="space-y-1">
-                <Label className="text-xs">Brief</Label>
-                <Textarea
-                  value={editBrief}
-                  onChange={(e) => setEditBrief(e.target.value)}
-                  className="text-xs"
-                />
-              </div>
-            </div>
+              {isEditing && (
+                <div className="space-y-2 pt-2">
+                  <div className="space-y-1">
+                    <Label className="text-xs">Title</Label>
+                    <Input
+                      value={editTitle}
+                      onChange={(e) => setEditTitle(e.target.value)}
+                      className="h-8 text-xs"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Brief</Label>
+                    <Textarea
+                      value={editBrief}
+                      onChange={(e) => setEditBrief(e.target.value)}
+                      className="text-xs"
+                    />
+                  </div>
+                </div>
+              )}
+            </>
           )}
           <div
             className={`flex items-center gap-2 pt-2 ${isMobile ? "justify-center" : ""}`}
@@ -29878,7 +38117,7 @@ const PostCard = ({
             const b = editBrief?.trim() ?? "";
             if (!t || !b) {
               toast({
-                title: "Please fill in title and brief before generating.",
+                title: "Please fill in title and brief before opening.",
               });
               return;
             }
@@ -29898,8 +38137,84 @@ const PostCard = ({
           ) : (
             <Sparkles className={isMobile ? "mr-2 h-4 w-4" : "h-3 w-3 mr-1"} />
           )}
-          Generate Content
-        </Button>
+          Open in Create
+        </Button>{" "}
+        <Button
+          size={isMobile ? "default" : "sm"}
+          variant="outline"
+          className={`text-xs font-medium ${isMobile ? "w-full h-9" : "h-7"}`}
+          onClick={() => {
+            const t = (editTitle ?? post.title ?? "").trim();
+            const b = (editBrief ?? post.contentBrief ?? "").trim();
+            const rationale = (post.rationale ?? "").toString();
+            const platform =
+              (post as any).platform ||
+              (Array.isArray((post as any)?.platforms)
+                ? (post as any).platforms[0]
+                : Array.isArray((post as any)?.targetPlatforms)
+                  ? (post as any).targetPlatforms[0]
+                  : undefined);
+            const parts: string[] = [];
+            if (t) parts.push(`Title: ${t}`);
+            if (b) parts.push(`Brief: ${b}`);
+            if (rationale) parts.push(`Why this works: ${rationale}`);
+            try {
+              const hs: any = (post as any).hashtags;
+              const tagSet = new Set<string>();
+              if (Array.isArray(hs)) {
+                hs.forEach(
+                  (s) =>
+                    typeof s === "string" &&
+                    s.trim() &&
+                    tagSet.add(
+                      s.startsWith("#") ? s : `#${s.replace(/^#/, "")}`,
+                    ),
+                );
+              } else if (typeof hs === "object" && hs) {
+                Object.values(hs)
+                  .flat()
+                  .forEach(
+                    (s: any) =>
+                      typeof s === "string" &&
+                      s.trim() &&
+                      tagSet.add(
+                        s.startsWith("#") ? s : `#${s.replace(/^#/, "")}`,
+                      ),
+                  );
+              } else if (typeof hs === "string") {
+                hs.split(/[\s,]+/).forEach(
+                  (s: string) =>
+                    s &&
+                    tagSet.add(
+                      s.startsWith("#") ? s : `#${s.replace(/^#/, "")}`,
+                    ),
+                );
+              }
+              const tags = Array.from(tagSet).join(" ");
+              if (tags) parts.push(`Hashtags: ${tags}`);
+            } catch {}
+            const preview = parts.join("\n\n").slice(0, 2000);
+            const msg = `Help me refine this idea${platform ? ` for ${platform}` : ""}. Keep my brand voice and suggest 3 improved post options with reasons and platform-specific formatting.\n\n${preview}`;
+            window.dispatchEvent(
+              new CustomEvent("open-ripple", {
+                detail: {
+                  message: msg,
+                  context: {
+                    source: "discover_post",
+                    dayIndex,
+                    postId: post.id,
+                    platform,
+                    format: post.format,
+                    pillar: post.pillar,
+                  },
+                },
+              }),
+            );
+          }}
+        >
+          <Bot className={isMobile ? "mr-2 h-4 w-4" : "h-3 w-3 mr-1"} />
+          Tweak with Ripple
+        </Button>{" "}
         <Button
           size={isMobile ? "default" : "sm"}
           variant="ghost"
@@ -29928,82 +38243,82 @@ const PostCard = ({
               className={`animate-spin ${isMobile ? "mr-2 h-4 w-4" : "h-3 w-3 mr-1"}`}
             />
           ) : null}
-          Regenerate Day
+          Shuffle Day
         </Button>
-
-        <div
-          className={`flex gap-1 ${isMobile ? "justify-center w-full" : ""}`}
-        >
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className={`hover:text-red-500 ${isMobile ? "h-8 w-8" : "h-7 w-7"}`}
-                  onClick={() => onFeedback(post, "love")}
-                >
-                  <Heart className={isMobile ? "h-4 w-4" : "h-4 w-4"} />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p>Love this!</p>
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className={`hover:text-green-500 ${isMobile ? "h-8 w-8" : "h-7 w-7"}`}
-                  onClick={() => onFeedback(post, "like")}
-                >
-                  <ThumbsUp className={isMobile ? "h-4 w-4" : "h-4 w-4"} />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p>I like this</p>
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className={`hover:text-yellow-500 ${isMobile ? "h-8 w-8" : "h-7 w-7"}`}
-                  onClick={() => openQuickFeedback("neutral")}
-                >
-                  <Meh className={isMobile ? "h-4 w-4" : "h-4 w-4"} />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p>It's okay</p>
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className={`hover:text-gray-500 ${isMobile ? "h-8 w-8" : "h-7 w-7"}`}
-                  onClick={() => openQuickFeedback("dislike")}
-                >
-                  <ThumbsDown className={isMobile ? "h-4 w-4" : "h-4 w-4"} />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p>Not for me</p>
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-        </div>
-
+        {!simple && (
+          <div
+            className={`flex gap-1 ${isMobile ? "justify-center w-full" : ""}`}
+          >
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className={`hover:text-red-500 ${isMobile ? "h-8 w-8" : "h-7 w-7"}`}
+                    onClick={() => onFeedback(post, "love")}
+                  >
+                    <Heart className={isMobile ? "h-4 w-4" : "h-4 w-4"} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>Love this!</p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className={`hover:text-green-500 ${isMobile ? "h-8 w-8" : "h-7 w-7"}`}
+                    onClick={() => onFeedback(post, "like")}
+                  >
+                    <ThumbsUp className={isMobile ? "h-4 w-4" : "h-4 w-4"} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>I like this</p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className={`hover:text-yellow-500 ${isMobile ? "h-8 w-8" : "h-7 w-7"}`}
+                    onClick={() => openQuickFeedback("neutral")}
+                  >
+                    <Meh className={isMobile ? "h-4 w-4" : "h-4 w-4"} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>It's okay</p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className={`hover:text-gray-500 ${isMobile ? "h-8 w-8" : "h-7 w-7"}`}
+                    onClick={() => openQuickFeedback("dislike")}
+                  >
+                    <ThumbsDown className={isMobile ? "h-4 w-4" : "h-4 w-4"} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>Not for me</p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          </div>
+        )}
         {showQuickFeedback && (
           <div className={`w-full ${isMobile ? "mt-3" : "mt-2"}`}>
             <div className="p-2 border rounded-lg bg-secondary/20">
@@ -30542,6 +38857,11 @@ function SchedulePostDialog({
     undefined,
   );
   const [includeImage, setIncludeImage] = useState(true);
+  const [preflightResult, setPreflightResult] = useState<any>(null);
+  const [preflightLoading, setPreflightLoading] = useState(false);
+  const preflightMutation = useMutation(apiClient.preflightSchedule);
+  const saveEdits = useMutation(apiClient.saveContentEdits);
+  const { toast } = useToast();
 
   const selectedAccount = accounts?.find((acc) => acc.id === selectedAccountId);
   const facebookPages =
@@ -30647,13 +38967,59 @@ function SchedulePostDialog({
     setIncludeImage(!!img);
   }, [isOpen, item, sourceType]);
 
-  const handleSchedule = () => {
+  // Auto-run preflight when key inputs change (debounced)
+  useEffect(() => {
+    if (!isOpen || !selectedAccount) return;
+    const handler = setTimeout(() => {
+      void (async () => {
+        try {
+          setPreflightLoading(true);
+          const res = await preflightMutation.mutateAsync({
+            content: draftContent,
+            platform: selectedAccount.platform,
+            accountId: selectedAccount.id,
+            pageId: selectedPageId || undefined,
+            scheduledAt: scheduledAt ? scheduledAt.toISOString() : undefined,
+            sourceType,
+            sourceId: item?.id,
+            imageUrl: includeImage ? draftImageUrl : undefined,
+          });
+          setPreflightResult(res);
+        } catch {
+          // keep silent; UI remains as-is
+        } finally {
+          setPreflightLoading(false);
+        }
+      })();
+    }, 500);
+    return () => clearTimeout(handler);
+  }, [
+    isOpen,
+    selectedAccountId,
+    selectedPageId,
+    scheduledAt,
+    draftContent,
+    includeImage,
+  ]);
+
+  const handleSchedule = async () => {
     if (!selectedAccount || !scheduledAt) return;
 
     const contentText = draftContent.trim();
     const imageUrl: string | undefined = includeImage
       ? draftImageUrl
       : undefined;
+
+    try {
+      await saveEdits.mutateAsync({
+        contentId: item.id,
+        postText: contentText,
+      });
+      toast({ title: "Saved edits" });
+    } catch {
+      // proceed with scheduling even if save fails
+      toast({ title: "Couldn't save edits, scheduling anyway" });
+    }
 
     onSchedule({
       content: contentText,
@@ -30722,6 +39088,232 @@ function SchedulePostDialog({
               )}
             </CardContent>
           </Card>
+
+          {selectedAccount && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  Preflight Assistant
+                  {preflightLoading && (
+                    <span className="text-xs text-muted-foreground flex items-center gap-1">
+                      <RefreshCw className="h-3 w-3 animate-spin" /> Checking
+                    </span>
+                  )}
+                  {!preflightLoading &&
+                    preflightResult &&
+                    (preflightResult.errors?.length > 0 ? (
+                      <Badge variant="destructive">Needs fixes</Badge>
+                    ) : (
+                      <Badge variant="secondary">Ready</Badge>
+                    ))}
+                </CardTitle>
+                <CardDescription>
+                  Live checks for length, account, timing and conflicts with
+                  quick fixes.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {preflightResult?.errors?.length ? (
+                  <Alert>
+                    <AlertTriangle className="h-4 w-4" />
+                    <AlertTitle>Fix before scheduling</AlertTitle>
+                    <AlertDescription>
+                      <ul className="list-disc pl-5 space-y-1">
+                        {preflightResult.errors
+                          .slice(0, 3)
+                          .map((e: string, i: number) => (
+                            <li key={i} className="text-sm">
+                              {e}
+                            </li>
+                          ))}
+                      </ul>
+                    </AlertDescription>
+                  </Alert>
+                ) : (
+                  <div className="text-sm text-green-600 flex items-center gap-2">
+                    <CheckCircle className="h-4 w-4" /> Looks good
+                  </div>
+                )}
+                {/* Character counter and one-tap trim */}
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-2">
+                  <div className="text-sm">
+                    {(() => {
+                      const c = preflightResult?.suggestions?.content;
+                      const max = c?.maxLength as number | undefined;
+                      const len = (c?.sanitized?.length ??
+                        draftContent.length) as number;
+                      if (!max) return <span>{len} chars</span>;
+                      const over = (c?.overBy ?? 0) as number;
+                      const remaining = (c?.charsRemaining ?? 0) as number;
+                      return (
+                        <span>
+                          {len}/{max}{" "}
+                          {over > 0 ? (
+                            <span className="text-destructive ml-1">
+                              (+{over} over)
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground ml-1">
+                              ({remaining} left)
+                            </span>
+                          )}
+                        </span>
+                      );
+                    })()}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {preflightResult?.suggestions?.content?.overBy > 0 && (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => {
+                          const trimmed = preflightResult?.suggestions?.content
+                            ?.trimmed as string | undefined;
+                          if (trimmed) setDraftContent(trimmed);
+                        }}
+                        className="h-7"
+                      >
+                        Trim to fit
+                      </Button>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => {
+                        const sanitized = preflightResult?.suggestions?.content
+                          ?.sanitized as string | undefined;
+                        if (sanitized) setDraftContent(sanitized);
+                      }}
+                      className="h-7"
+                    >
+                      Humanize
+                    </Button>
+                  </div>
+                </div>
+                {/* Best-time chips */}
+                {preflightResult?.suggestions?.bestTimeChips?.length > 0 && (
+                  <div className="space-y-1">
+                    <div className="text-sm font-medium">Best times</div>
+                    <div className="flex flex-wrap gap-2">
+                      {preflightResult.suggestions.bestTimeChips.map(
+                        (
+                          chip: { label: string; datetime: string },
+                          i: number,
+                        ) => (
+                          <Button
+                            key={i}
+                            variant="secondary"
+                            size="sm"
+                            className="h-7"
+                            onClick={() =>
+                              setScheduledAt(new Date(chip.datetime))
+                            }
+                          >
+                            {chip.label}
+                          </Button>
+                        ),
+                      )}
+                    </div>
+                  </div>
+                )}
+                {/* Voice & Authenticity meters */}
+                {preflightResult?.suggestions?.meters && (
+                  <div className="rounded-md border p-3 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-medium">Voice match</div>
+                      <div className="text-sm text-muted-foreground">
+                        {preflightResult.suggestions.meters.voiceMatch}%
+                      </div>
+                    </div>
+                    <Progress
+                      value={preflightResult.suggestions.meters.voiceMatch}
+                    />
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-medium">Authenticity</div>
+                      <div className="text-sm text-muted-foreground">
+                        {preflightResult.suggestions.meters.authenticity}%
+                      </div>
+                    </div>
+                    <Progress
+                      value={preflightResult.suggestions.meters.authenticity}
+                    />
+                  </div>
+                )}
+                {/* Platform preview */}{" "}
+                {preflightResult?.suggestions?.platformPreview && (
+                  <div className="rounded-md border p-3">
+                    <div className="text-sm font-medium mb-1">
+                      {selectedAccount.platform.charAt(0).toUpperCase() +
+                        selectedAccount.platform.slice(1)}{" "}
+                      preview
+                    </div>
+                    <div className="whitespace-pre-wrap text-sm">
+                      {preflightResult.suggestions.platformPreview.content}
+                    </div>
+                    {preflightResult.suggestions.platformPreview.notes?.length >
+                      0 && (
+                      <ul className="list-disc pl-5 mt-2 text-xs text-muted-foreground space-y-1">
+                        {preflightResult.suggestions.platformPreview.notes.map(
+                          (n: string, idx: number) => (
+                            <li key={idx}>{n}</li>
+                          ),
+                        )}
+                      </ul>
+                    )}
+                  </div>
+                )}
+                {/* Reconnect / Page selection prompts */}
+                {preflightResult?.suggestions?.requiresReconnect && (
+                  <Alert className="border-amber-300">
+                    <AlertTriangle className="h-4 w-4" />
+                    <AlertTitle>Reconnect required</AlertTitle>
+                    <AlertDescription className="space-y-2">
+                      Your {selectedAccount.platform} connection needs a quick
+                      re‑auth.
+                      <div>
+                        {selectedAccount.platform === "twitter" && (
+                          <TwitterOAuthButton />
+                        )}
+                        {selectedAccount.platform === "instagram" && (
+                          <InstagramOAuthButton />
+                        )}
+                        {selectedAccount.platform === "facebook" && (
+                          <FacebookOAuthButton />
+                        )}
+                        {selectedAccount.platform === "linkedin" && (
+                          <LinkedInOAuthButton />
+                        )}
+                        {selectedAccount.platform === "youtube" && (
+                          <YouTubeOAuthButton />
+                        )}
+                      </div>
+                    </AlertDescription>
+                  </Alert>
+                )}
+                {preflightResult?.suggestions?.needsPageSelection && (
+                  <Alert>
+                    <AlertTriangle className="h-4 w-4" />
+                    <AlertTitle>Select a Page</AlertTitle>
+                    <AlertDescription>
+                      Please pick a Facebook Page to continue.
+                    </AlertDescription>
+                  </Alert>
+                )}
+                {/* Warnings */}
+                {preflightResult?.warnings?.length > 0 && (
+                  <div className="text-xs text-amber-600">
+                    <ul className="list-disc pl-5 space-y-1">
+                      {preflightResult.warnings
+                        .slice(0, 4)
+                        .map((w: string, i: number) => (
+                          <li key={i}>{w}</li>
+                        ))}
+                    </ul>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
           {(!accounts || !hasOAuthConnections(accounts)) && (
             <Card className="border-dashed">
               <CardHeader>
@@ -30900,12 +39492,163 @@ function SchedulePostDialog({
                     No conflicts detected
                   </div>
                 )}
+                {/* Conflict assistant */}
+                {selectedAccount && scheduledAt && conflicts?.hasConflicts && (
+                  <div className="mt-2 flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      className="h-7"
+                      onClick={async () => {
+                        try {
+                          // 1) Prefer server-suggested conflict-free times
+                          const firstSuggested = (conflicts as any)
+                            ?.suggestedTimes?.[0];
+                          if (firstSuggested) {
+                            const dt = new Date(firstSuggested as any);
+                            if (!Number.isNaN(dt.getTime())) {
+                              setScheduledAt(dt);
+                              toast({ title: "Moved to next free slot" });
+                              return;
+                            }
+                          }
+                          // 2) Ask for optimal times and pick the first upcoming
+                          let candidate: Date | null = null;
+                          try {
+                            const res = await getOptimalTimes.mutateAsync({
+                              platform: selectedAccount.platform,
+                              accountId: selectedAccount.id,
+                              pageId: selectedPageId || undefined,
+                              limit: 5,
+                            } as any);
+                            const times: any[] =
+                              (res as any)?.times || (res as any)?.slots || [];
+                            for (const t of times) {
+                              if (!t) continue;
+                              if (typeof t === "string") {
+                                // Could be like "Monday 3 PM" or "3 PM"
+                                const [dayName, ...rest] = t.split(" ");
+                                const timeLabel = rest.join(" ") || t;
+                                const dt =
+                                  /Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday/i.test(
+                                    dayName || "",
+                                  )
+                                    ? getNextDateForSlot(
+                                        dayName ||
+                                          new Date().toLocaleDateString(
+                                            undefined,
+                                            { weekday: "long" },
+                                          ),
+                                        timeLabel,
+                                      )
+                                    : getNextDateForSlot(
+                                        new Date().toLocaleDateString(
+                                          undefined,
+                                          {
+                                            weekday: "long",
+                                          },
+                                        ),
+                                        t,
+                                      );
+                                if (dt && dt > new Date()) {
+                                  candidate = dt;
+                                  break;
+                                }
+                              } else if (typeof t === "object") {
+                                const iso =
+                                  (t as any).datetime || (t as any).iso;
+                                const dt = iso ? new Date(iso) : undefined;
+                                if (dt && dt > new Date()) {
+                                  candidate = dt;
+                                  break;
+                                }
+                              }
+                            }
+                          } catch {}
+                          // 3) Fallback: add 30 minutes to current selection
+                          if (!candidate) {
+                            candidate = new Date(
+                              (scheduledAt as Date).getTime() + 30 * 60000,
+                            );
+                          }
+                          setScheduledAt(candidate);
+                          toast({ title: "Moved to next free slot" });
+                        } catch {
+                          toast({
+                            title: "Couldn’t auto-fix",
+                            variant: "destructive",
+                          });
+                        }
+                      }}
+                    >
+                      Fix for me
+                    </Button>
+                  </div>
+                )}
               </div>
             )}
           </div>
         </div>
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <Button
+            variant="secondary"
+            onClick={async () => {
+              try {
+                await saveEdits.mutateAsync({
+                  contentId: item.id,
+                  postText: draftContent.trim(),
+                });
+                toast({ title: "Saved" });
+              } catch {
+                toast({
+                  title: "Failed to save edits",
+                  variant: "destructive",
+                });
+              }
+            }}
+            disabled={saveEdits.isLoading}
+          >
+            {saveEdits.isLoading && (
+              <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+            )}
+            Save
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => {
+              const platform = selectedAccount?.platform || "your platform";
+              const when = scheduledAt
+                ? new Date(scheduledAt).toLocaleString()
+                : "a good time";
+              const preview = (draftContent || "").slice(0, 2000);
+              const msg = `Help me refine this post for ${platform}${scheduledAt ? ` scheduled at ${when}` : ""}. Keep my brand voice and suggest 3 improved options with reasons and platform-specific formatting.\n\nPost draft:\n${preview}`;
+              window.dispatchEvent(
+                new CustomEvent("open-ripple", {
+                  detail: {
+                    message: msg,
+                    context: {
+                      source: "schedule_dialog",
+                      sourceType,
+                      sourceId: item?.id,
+                      platform: selectedAccount?.platform,
+                      accountId: selectedAccount?.id,
+                      pageId: selectedPageId || undefined,
+                      scheduledAt: scheduledAt
+                        ? (scheduledAt as Date).toISOString?.() ||
+                          new Date(scheduledAt as any).toISOString()
+                        : undefined,
+                      includeImage: includeImage || false,
+                      imageUrl: includeImage ? draftImageUrl : undefined,
+                    },
+                  },
+                }),
+              );
+            }}
+          >
+            <Bot className="h-4 w-4 mr-2" />
+            Tweak with Ripple
+          </Button>
           <AlertDialogAction
             onClick={handleSchedule}
             disabled={
@@ -30914,7 +39657,9 @@ function SchedulePostDialog({
               (selectedAccount?.platform === "facebook" && !selectedPageId) ||
               !isConnectedAccount ||
               isScheduling ||
-              (sourceType === "VIDEO" && !item.content.startsWith("http"))
+              saveEdits.isLoading ||
+              (sourceType === "VIDEO" && !item.content.startsWith("http")) ||
+              (preflightResult && preflightResult.isValid === false)
             }
           >
             {isScheduling && (
@@ -30922,7 +39667,7 @@ function SchedulePostDialog({
             )}
             Confirm Schedule
           </AlertDialogAction>
-        </AlertDialogFooter>
+        </AlertDialogFooter>{" "}
       </AlertDialogContent>
     </AlertDialog>
   );
@@ -31504,7 +40249,7 @@ function SchedulerCalendarView({
   onSelectPost: (postId: string) => void;
   onDeletePost: (postId: string) => void;
   isDeletingPost: boolean;
-  onScheduleForDay?: (date: Date) => void;
+  onScheduleForDay?: (date: Date, time?: string) => void;
   density?: "compact" | "comfortable";
   expandAllDetails?: boolean;
 }) {
@@ -31608,6 +40353,15 @@ function SchedulerCalendarView({
     {} as Record<string, any[]>,
   );
 
+  const [dayViewMode, setDayViewMode] = useState<
+    Record<string, "simple" | "expanded">
+  >({});
+  const isDayExpanded = (d: Date) =>
+    (dayViewMode[d.toDateString()] ?? "simple") === "expanded";
+  const setDayMode = (d: Date, mode: "simple" | "expanded") => {
+    setDayViewMode((prev) => ({ ...prev, [d.toDateString()]: mode }));
+  };
+
   const weeklyGoal = 7;
   const postsThisWeek = weekDays.reduce(
     (sum, d) => sum + (postsByDay[d.toDateString()]?.length || 0),
@@ -31620,7 +40374,41 @@ function SchedulerCalendarView({
     .filter((d) => (postsByDay[d.toDateString()]?.length || 0) === 0)
     .map((d) => d.toLocaleDateString("en-US", { weekday: "short" }));
   const [insightsOpen, setInsightsOpen] = useState(false);
+  const { data: optimalTimesHints } = useQuery({
+    queryKey: ["optimalPostingTimes", "calendarHints"],
+    queryFn: () => apiClient.getOptimalPostingTimes({}),
+    staleTime: 300000,
+  });
   const optimalTimesMutation = useMutation(apiClient.getOptimalPostingTimes);
+  const getBestSlotForDay = useCallback(
+    (d: Date) => {
+      const dayName = d.toLocaleDateString("en-US", { weekday: "long" });
+      const slots =
+        (optimalTimesHints as any)?.optimalTimes?.filter(
+          (s: any) => s.dayName === dayName,
+        ) ?? [];
+      if (!slots.length) return null;
+      return slots.reduce(
+        (best: any, cur: any) =>
+          cur.score > (best?.score ?? -Infinity) ? cur : best,
+        null as any,
+      );
+    },
+    [optimalTimesHints],
+  );
+
+  const getTopSlotsForDay = useCallback(
+    (d: Date, limit = 3) => {
+      const dayName = d.toLocaleDateString("en-US", { weekday: "long" });
+      const slots = ((optimalTimesHints as any)?.optimalTimes ?? []).filter(
+        (s: any) => s.dayName === dayName,
+      );
+      return [...slots]
+        .sort((a: any, b: any) => b.score - a.score)
+        .slice(0, limit);
+    },
+    [optimalTimesHints],
+  );
 
   const navigateWeek = (direction: "prev" | "next") => {
     const newWeekStart = new Date(currentWeekStart);
@@ -31637,6 +40425,33 @@ function SchedulerCalendarView({
     startOfWeek.setDate(today.getDate() - dayOfWeek);
     setCurrentWeekStart(startOfWeek);
   };
+
+  // Keyboard navigation for accessibility and power users
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.target && (e.target as HTMLElement).tagName === "INPUT") return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === "ArrowRight") {
+        e.preventDefault();
+        if (focusedDayIndex < 6) setFocusedDayIndex((i) => Math.min(6, i + 1));
+        else navigateWeek("next");
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        if (focusedDayIndex > 0) setFocusedDayIndex((i) => Math.max(0, i - 1));
+        else navigateWeek("prev");
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        navigateWeek("prev");
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        navigateWeek("next");
+      } else if (e.key.toLowerCase() === "t") {
+        goToToday();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [focusedDayIndex]);
 
   if (isLoading) {
     return (
@@ -31729,35 +40544,85 @@ function SchedulerCalendarView({
           </div>
         </div>
         <div className="px-3 pb-3">
-          <div className="flex gap-2 overflow-x-auto no-scrollbar py-1">
-            {weekDays.map((day, idx) => {
-              const count = postsByDay[day.toDateString()]?.length || 0;
-              const isFocused = idx === focusedDayIndex;
-              const isToday = day.toDateString() === new Date().toDateString();
-              return (
-                <Button
-                  key={idx}
-                  size="sm"
-                  variant={isFocused ? "default" : "ghost"}
-                  className="h-9 md:h-8 flex-shrink-0 rounded-full"
-                  onClick={() => setFocusedDayIndex(idx)}
-                >
-                  <span className="mr-2 text-xs">
-                    {day.toLocaleDateString("en-US", { weekday: "short" })}
-                  </span>
-                  <Badge
-                    variant={count > 0 ? "secondary" : "outline"}
-                    className="text-[10px] px-1.5 py-0"
-                  >
-                    {count}
-                  </Badge>
-                  {isToday && (
-                    <span className="ml-2 w-1.5 h-1.5 rounded-full bg-primary inline-block" />
-                  )}
-                </Button>
-              );
-            })}
-          </div>
+          <TooltipProvider>
+            <div className="flex gap-2 overflow-x-auto no-scrollbar py-1">
+              {weekDays.map((day, idx) => {
+                const count = postsByDay[day.toDateString()]?.length || 0;
+                const isFocused = idx === focusedDayIndex;
+                const isToday =
+                  day.toDateString() === new Date().toDateString();
+                const bestSlot = getBestSlotForDay(day) as any;
+                // Heat value based on count (0..4+)
+                const intensity = Math.min(4, count);
+                const heatClasses = [
+                  "bg-transparent",
+                  "bg-primary/5",
+                  "bg-primary/10",
+                  "bg-primary/15",
+                  "bg-primary/20",
+                ];
+                return (
+                  <Tooltip key={idx}>
+                    <TooltipTrigger asChild>
+                      <Button
+                        size="sm"
+                        variant={isFocused ? "default" : "ghost"}
+                        className={`h-9 md:h-8 flex-shrink-0 rounded-full ${isFocused ? "ring-1 ring-primary/30" : heatClasses[intensity]}`}
+                        onClick={() => setFocusedDayIndex(idx)}
+                      >
+                        {" "}
+                        <span className="mr-2 text-xs">
+                          {day.toLocaleDateString("en-US", {
+                            weekday: "short",
+                          })}
+                        </span>
+                        <Badge
+                          variant={count > 0 ? "secondary" : "outline"}
+                          className="text-[10px] px-1.5 py-0"
+                        >
+                          {count}
+                        </Badge>
+                        {bestSlot?.time && (
+                          <span className="ml-2 hidden sm:inline text-[10px] text-muted-foreground flex items-center gap-1">
+                            <Clock className="h-3 w-3" /> {bestSlot.time}
+                            {typeof bestSlot.confidence !== "undefined" && (
+                              <span className="opacity-70 ml-0.5">
+                                {Math.round(bestSlot.confidence)}%
+                              </span>
+                            )}
+                          </span>
+                        )}
+                        {isToday && (
+                          <span className="ml-2 w-1.5 h-1.5 rounded-full bg-primary inline-block" />
+                        )}
+                        {isFocused && (
+                          <span className="ml-2 inline-flex items-center gap-1 text-[10px]">
+                            <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
+                            Focus
+                          </span>
+                        )}{" "}
+                      </Button>
+                    </TooltipTrigger>
+                    {bestSlot && (
+                      <TooltipContent>
+                        <div className="text-xs">
+                          <div className="font-medium">Best time</div>
+                          <div>
+                            {bestSlot.dayName} at {bestSlot.time}
+                          </div>
+                          {typeof bestSlot.confidence !== "undefined" && (
+                            <div className="text-muted-foreground">
+                              {Math.round(bestSlot.confidence)}% confidence
+                            </div>
+                          )}
+                        </div>
+                      </TooltipContent>
+                    )}
+                  </Tooltip>
+                );
+              })}
+            </div>
+          </TooltipProvider>
         </div>
         {insightsOpen && (
           <div className="px-3 pb-3">
@@ -31817,7 +40682,7 @@ function SchedulerCalendarView({
                     className={`overflow-hidden ${isToday ? "ring-2 ring-primary/20" : ""} transition-all duration-200 hover:shadow-md touch-manipulation`}
                   >
                     <CardHeader
-                      className="pb-3 bg-secondary/10 cursor-pointer"
+                      className="pb-3 bg-gradient-to-b from-secondary/20 to-transparent cursor-pointer"
                       onClick={() => onScheduleForDay && onScheduleForDay(day)}
                     >
                       <div className="flex items-center justify-between min-h-[44px]">
@@ -31837,13 +40702,73 @@ function SchedulerCalendarView({
                             })}
                           </p>
                         </div>
-                        <Badge variant="outline" className="text-xs">
-                          {dayPosts.length} post
-                          {dayPosts.length !== 1 ? "s" : ""}
-                        </Badge>
+                        <div className="flex items-center gap-2">
+                          <Badge variant="outline" className="text-xs">
+                            {dayPosts.length} post
+                            {dayPosts.length !== 1 ? "s" : ""}
+                          </Badge>
+                          {(() => {
+                            const s = getBestSlotForDay(day) as any;
+                            return s ? (
+                              <Badge
+                                variant="secondary"
+                                className="text-[10px]"
+                              >
+                                <Clock className="h-3 w-3 mr-1" /> {s.time}
+                                {typeof s.confidence !== "undefined" && (
+                                  <span className="ml-1 opacity-70">
+                                    {Math.round(s.confidence)}%
+                                  </span>
+                                )}
+                              </Badge>
+                            ) : null;
+                          })()}
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label="Quick add"
+                            className="h-7 w-7"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (onScheduleForDay) {
+                                const best = getBestSlotForDay(day) as any;
+                                onScheduleForDay(day, best?.time);
+                              }
+                            }}
+                          >
+                            <Plus className="h-4 w-4" />
+                          </Button>
+                        </div>
                       </div>
                     </CardHeader>
                     <CardContent className="pt-3">
+                      <div
+                        className="flex justify-end mb-2 md:hidden"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <Button
+                          variant={!isDayExpanded(day) ? "secondary" : "ghost"}
+                          size="sm"
+                          className="h-7 text-[11px] px-2 mr-1"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDayMode(day, "simple");
+                          }}
+                        >
+                          Simple
+                        </Button>
+                        <Button
+                          variant={isDayExpanded(day) ? "secondary" : "ghost"}
+                          size="sm"
+                          className="h-7 text-[11px] px-2"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDayMode(day, "expanded");
+                          }}
+                        >
+                          Expanded
+                        </Button>
+                      </div>
                       {dayPosts.length > 0 ? (
                         <div className="space-y-2">
                           {dayPosts.map((post) => (
@@ -31855,15 +40780,49 @@ function SchedulerCalendarView({
                               onDelete={() => onDeletePost(post.id)}
                               isDeleting={isDeletingPost}
                               compact={density === "compact"}
-                              expandAllDetails={expandAllDetails}
+                              expandAllDetails={
+                                expandAllDetails || isDayExpanded(day)
+                              }
                             />
                           ))}
                         </div>
                       ) : (
-                        <div className="text-center py-4">
+                        <div className="text-center py-4 border border-dashed rounded-lg">
+                          <Calendar className="h-4 w-4 text-muted-foreground mx-auto mb-1" />
                           <p className="text-xs text-muted-foreground mb-2">
-                            No posts scheduled
+                            No posts yet
                           </p>
+                          {(() => {
+                            const suggestions = getTopSlotsForDay(
+                              day,
+                              3,
+                            ) as any[];
+                            return suggestions.length ? (
+                              <div className="flex items-center justify-center gap-2 mb-2">
+                                {suggestions.map((s, i) => (
+                                  <Button
+                                    key={i}
+                                    variant="secondary"
+                                    size="sm"
+                                    className="h-8 text-[11px]"
+                                    onClick={() =>
+                                      onScheduleForDay
+                                        ? onScheduleForDay(day, s.time)
+                                        : (window.location.href = `/create?date=${day.toISOString().split("T")[0]}&time=${encodeURIComponent(s.time)}`)
+                                    }
+                                  >
+                                    <Clock className="h-3 w-3 mr-1" />
+                                    {s.time}
+                                    {typeof s.confidence !== "undefined" && (
+                                      <span className="ml-1 opacity-70">
+                                        {Math.round(s.confidence)}%
+                                      </span>
+                                    )}
+                                  </Button>
+                                ))}
+                              </div>
+                            ) : null;
+                          })()}
                           {onScheduleForDay && (
                             <Button
                               variant="outline"
@@ -31903,23 +40862,91 @@ function SchedulerCalendarView({
                   className={`flex flex-col bg-background snap-start ${isToday ? "ring-2 ring-primary/20" : ""}`}
                 >
                   <div
-                    className={`p-4 border-b ${isToday ? "bg-primary/10" : "bg-secondary/20"}`}
+                    className={`p-4 border-b ${isToday ? "bg-gradient-to-b from-primary/15 to-transparent" : "bg-gradient-to-b from-secondary/20 to-transparent"}`}
                     onClick={() => onScheduleForDay && onScheduleForDay(day)}
                   >
-                    <p
-                      className={`font-semibold text-center text-sm ${isToday ? "text-primary" : ""}`}
-                    >
-                      {day.toLocaleDateString("en-US", { weekday: "short" })}
-                      {isToday && " (Today)"}
-                    </p>
-                    <p className="text-xs text-muted-foreground text-center">
-                      {day.toLocaleDateString("en-US", {
-                        month: "short",
-                        day: "numeric",
-                      })}
-                    </p>
+                    <div className="flex items-center justify-between">
+                      <div className="text-center flex-1">
+                        <p
+                          className={`font-semibold text-sm ${isToday ? "text-primary" : ""}`}
+                        >
+                          {day.toLocaleDateString("en-US", {
+                            weekday: "short",
+                          })}
+                          {isToday && " (Today)"}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {day.toLocaleDateString("en-US", {
+                            month: "short",
+                            day: "numeric",
+                          })}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {(() => {
+                          const s = getBestSlotForDay(day) as any;
+                          return s ? (
+                            <Badge
+                              variant="secondary"
+                              className="text-[10px] ml-2"
+                            >
+                              <Clock className="h-3 w-3 mr-1" /> {s.time}
+                              {typeof s.confidence !== "undefined" && (
+                                <span className="ml-1 opacity-70">
+                                  {Math.round(s.confidence)}%
+                                </span>
+                              )}
+                            </Badge>
+                          ) : null;
+                        })()}
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          aria-label="Quick add"
+                          className="h-7 w-7"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (onScheduleForDay) {
+                              const best = getBestSlotForDay(day) as any;
+                              onScheduleForDay(day, best?.time);
+                            }
+                          }}
+                        >
+                          <Plus className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
                   </div>
                   <div className="p-3 space-y-2 flex-1 min-h-[220px]">
+                    <div
+                      className="hidden md:flex justify-end mb-2"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div className="bg-muted rounded-md p-0.5">
+                        <Button
+                          variant={!isDayExpanded(day) ? "default" : "ghost"}
+                          size="sm"
+                          className="h-7 text-[11px] px-2 mr-1"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDayMode(day, "simple");
+                          }}
+                        >
+                          Simple
+                        </Button>
+                        <Button
+                          variant={isDayExpanded(day) ? "default" : "ghost"}
+                          size="sm"
+                          className="h-7 text-[11px] px-2"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDayMode(day, "expanded");
+                          }}
+                        >
+                          Expanded
+                        </Button>
+                      </div>
+                    </div>
                     {dayPosts.length > 0 ? (
                       dayPosts.map((post) => (
                         <ScheduledPostCard
@@ -31930,14 +40957,48 @@ function SchedulerCalendarView({
                           onDelete={() => onDeletePost(post.id)}
                           isDeleting={isDeletingPost}
                           compact={density === "compact"}
-                          expandAllDetails={expandAllDetails}
+                          expandAllDetails={
+                            expandAllDetails || isDayExpanded(day)
+                          }
                         />
                       ))
                     ) : (
-                      <div className="text-center py-6">
+                      <div className="text-center py-6 border border-dashed rounded-lg">
+                        <Calendar className="h-5 w-5 text-muted-foreground mx-auto mb-2" />
                         <p className="text-xs text-muted-foreground mb-2">
-                          No posts scheduled
+                          No posts yet
                         </p>
+                        {(() => {
+                          const suggestions = getTopSlotsForDay(
+                            day,
+                            3,
+                          ) as any[];
+                          return suggestions.length ? (
+                            <div className="flex items-center justify-center gap-2 mb-2">
+                              {suggestions.map((s, i) => (
+                                <Button
+                                  key={i}
+                                  variant="secondary"
+                                  size="sm"
+                                  className="h-8 text-[11px]"
+                                  onClick={() =>
+                                    onScheduleForDay
+                                      ? onScheduleForDay(day, s.time)
+                                      : (window.location.href = `/create?date=${day.toISOString().split("T")[0]}&time=${encodeURIComponent(s.time)}`)
+                                  }
+                                >
+                                  <Clock className="h-3 w-3 mr-1" />
+                                  {s.time}
+                                  {typeof s.confidence !== "undefined" && (
+                                    <span className="ml-1 opacity-70">
+                                      {Math.round(s.confidence)}%
+                                    </span>
+                                  )}
+                                </Button>
+                              ))}
+                            </div>
+                          ) : null;
+                        })()}
                         {onScheduleForDay && (
                           <Button
                             variant="outline"
@@ -32055,15 +41116,31 @@ function ScheduledPostCard({
     ? computeFreshness(post.scheduledAt, optimalTimesMutation.data)
     : undefined;
 
+  const statusDotClass =
+    post.status === "POSTED"
+      ? "bg-green-500"
+      : post.status === "FAILED"
+        ? "bg-red-500"
+        : "bg-muted-foreground";
+  const statusAccentClass =
+    post.status === "POSTED"
+      ? "bg-green-500"
+      : post.status === "FAILED"
+        ? "bg-red-500"
+        : "bg-amber-500";
+
   return (
     <div
-      className={`group border rounded-lg transition-all duration-200 hover:shadow-sm ${
+      className={`group border border-border/70 rounded-lg bg-card transition-all duration-200 hover:shadow-md hover:ring-1 hover:ring-primary/10 hover:border-primary/30 active:scale-[0.99] touch-manipulation ${
         isSelected
           ? "ring-2 ring-primary/50 bg-primary/5"
-          : "bg-background hover:bg-accent/50"
+          : "bg-card hover:bg-accent/50"
       } ${compact ? "p-2" : "p-3"}`}
     >
       <div className="flex items-start gap-2">
+        <div
+          className={`w-1 self-stretch rounded-full ${statusAccentClass} opacity-60`}
+        />
         <Checkbox
           checked={isSelected}
           onCheckedChange={onSelect}
@@ -32071,40 +41148,51 @@ function ScheduledPostCard({
         />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
-            <div className="flex items-center gap-1 text-muted-foreground">
-              {getPlatformIcon(post.platform)}
+            <div className="flex items-center gap-1.5 text-muted-foreground">
+              <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-muted">
+                {getPlatformIcon(post.platform)}
+              </span>
               <span className="text-xs capitalize">{post.platform}</span>
             </div>
-            <Badge
-              variant={
-                post.status === "POSTED"
-                  ? "default"
-                  : post.status === "FAILED"
-                    ? "destructive"
-                    : "secondary"
-              }
-              className="text-xs px-1.5 py-0.5"
-            >
-              {post.status}
-            </Badge>
+            {!compact && (
+              <Badge
+                variant={
+                  post.status === "POSTED"
+                    ? "default"
+                    : post.status === "FAILED"
+                      ? "destructive"
+                      : "secondary"
+                }
+                className="text-xs px-1.5 py-0.5"
+              >
+                {post.status}
+              </Badge>
+            )}
           </div>
           <p
-            className={`text-sm font-medium line-clamp-2 mb-1 ${compact ? "text-xs" : ""}`}
+            className={`text-sm font-medium ${compact ? "line-clamp-1 text-xs" : "line-clamp-2"} mb-1`}
           >
             {post.content.substring(0, compact ? 60 : 100)}...
           </p>
           <div className="flex items-center justify-between">
-            <p className="text-xs text-muted-foreground">{postTime}</p>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 px-2 text-xs"
-              onClick={() => setShowInsights((v) => !v)}
-            >
-              {showInsights ? "Hide" : "Insights"}
-            </Button>
+            <div className="flex items-center gap-2">
+              {compact && (
+                <span className={`w-2 h-2 rounded-full ${statusDotClass}`} />
+              )}
+              <p className="text-xs text-muted-foreground">{postTime}</p>
+            </div>
+            {!compact && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-xs"
+                onClick={() => setShowInsights((v) => !v)}
+              >
+                {showInsights ? "Hide" : "Insights"}
+              </Button>
+            )}
           </div>
-          {showInsights && (
+          {!compact && showInsights && (
             <div className="mt-2 space-y-2">
               {/* Potential meter */}
               <div className="flex items-center gap-2">
@@ -32304,6 +41392,8 @@ function SchedulerPage() {
 
   const { data: connectedAccounts, isLoading: accountsLoading } =
     useConnectedAccounts();
+  const { isSetup: hasWebsiteSetup, hasAnalysis } = useBrandContext();
+  const brandSetup = !!(hasWebsiteSetup || hasAnalysis);
 
   // Pull to refresh functionality for mobile
   const handleRefresh = useCallback(async () => {
@@ -32349,6 +41439,12 @@ function SchedulerPage() {
 
   // Remove conflicts query for now - it needs specific post data
   // const conflicts = null;
+
+  // Drafts quick list for Scheduler plan view
+  const { data: drafts } = useQuery({
+    queryKey: ["drafts", 20],
+    queryFn: () => apiClient.listDrafts({ limit: 20 }),
+  });
 
   // Mutations
   const deleteMutation = useMutation(apiClient.deleteScheduledPost, {
@@ -32438,10 +41534,10 @@ function SchedulerPage() {
     }
   };
 
-  const handleScheduleForDay = (date: Date) => {
-    // Navigate to create page with pre-filled date
+  const handleScheduleForDay = (date: Date, time?: string) => {
     const dateParam = date.toISOString().split("T")[0];
-    window.location.href = `/create?date=${dateParam}`;
+    const timeParam = time ? `&time=${encodeURIComponent(time)}` : "";
+    window.location.href = `/create?date=${dateParam}${timeParam}`;
   };
 
   if (accountsLoading) {
@@ -32452,7 +41548,7 @@ function SchedulerPage() {
     );
   }
 
-  if (!connectedAccounts || connectedAccounts.length === 0) {
+  if ((!connectedAccounts || connectedAccounts.length === 0) && !brandSetup) {
     return (
       <EmptyState
         title="No Connected Accounts"
@@ -32467,7 +41563,7 @@ function SchedulerPage() {
 
   return (
     <div
-      className="space-y-4 sm:space-y-6 overscroll-y-contain pb-28 sm:pb-8"
+      className="space-y-4 sm:space-y-6 overscroll-y-contain pb-28 sm:pb-8 scheduler-surface rounded-xl p-3 sm:p-4"
       style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 5rem)" }}
     >
       {/* Enhanced Mobile-Responsive Header */}
@@ -32522,6 +41618,115 @@ function SchedulerPage() {
               </Button>
               {/* Analytics removed */}
             </div>
+
+            {/* Quick Actions */}
+            <Drawer>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <DrawerTrigger asChild>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className="h-9 sm:h-8 text-xs sm:text-sm ml-auto"
+                      >
+                        Saved Drafts
+                        <Badge variant="outline" className="ml-2">
+                          {Array.isArray(drafts) ? drafts.length : 0}
+                        </Badge>
+                      </Button>
+                    </DrawerTrigger>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p className="max-w-[240px] text-xs">
+                      Drafts live here for reuse and speed. Copy to paste
+                      anywhere, or Review to tweak before posting.
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+
+              <DrawerContent>
+                <DrawerHeader>
+                  <DrawerTitle>Saved Drafts</DrawerTitle>
+                  <DrawerDescription>
+                    Your saved posts. Tap Copy to use, or Review to edit.
+                  </DrawerDescription>
+                </DrawerHeader>
+                <div className="px-4 pb-4 space-y-2 max-h-[60vh] overflow-y-auto">
+                  {Array.isArray(drafts) && drafts.length > 0 ? (
+                    drafts.map((d: any) => (
+                      <div key={d.id} className="border rounded-lg p-3 bg-card">
+                        <div className="text-sm font-medium line-clamp-2">
+                          {d.title || "Untitled Draft"}
+                        </div>
+                        <div className="mt-2 flex items-center justify-between gap-2">
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => {
+                              copy((d.content || "") as string);
+                              toast({ title: "Text copied" });
+                            }}
+                          >
+                            Copy text
+                          </Button>
+                          <Button asChild size="sm" variant="outline">
+                            <Link to="/create">Review</Link>
+                          </Button>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      No drafts yet.
+                    </p>
+                  )}
+                  <div className="text-xs text-muted-foreground pt-2">
+                    {(() => {
+                      try {
+                        const ts = Array.isArray(drafts)
+                          ? drafts
+                              .map((d: any) => d.updatedAt || d.createdAt)
+                              .filter(Boolean)
+                              .map((t: any) => new Date(t).getTime())
+                          : [];
+                        if (!ts.length) return null;
+                        const max = new Date(Math.max(...ts));
+                        return (
+                          <span>
+                            Last updated:{" "}
+                            {max.toLocaleString("en-US", {
+                              month: "short",
+                              day: "numeric",
+                              year: "numeric",
+                              hour: "numeric",
+                              minute: "2-digit",
+                            })}
+                          </span>
+                        );
+                      } catch {
+                        return null;
+                      }
+                    })()}
+                  </div>
+                </div>
+                <DrawerFooter className="px-4 pb-4 flex flex-row gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={() =>
+                      queryClient.invalidateQueries(["drafts", 20])
+                    }
+                  >
+                    Refresh
+                  </Button>
+                  <DrawerClose asChild>
+                    <Button>Close</Button>
+                  </DrawerClose>
+                </DrawerFooter>
+              </DrawerContent>
+            </Drawer>
+
             {/* View Mode Toggle - Only show for schedule tab */}
             {activeTab === "schedule" && !showPlan && (
               <div className="flex w-full sm:w-auto bg-muted p-1 rounded-lg">
@@ -32898,10 +42103,32 @@ function SchedulerPage() {
         <div className="space-y-6">
           {showPlan && (
             <>
-              <ContentDiscoveryTab setPreviewContentId={setPreviewContentId} />
+              {Array.isArray(drafts) && drafts.length > 0 && (
+                <Card className="overflow-hidden">
+                  <CardHeader className="pb-2 hidden">
+                    <CardTitle className="text-base sm:text-lg">
+                      Saved Drafts
+                    </CardTitle>
+                    <CardDescription>
+                      Your saved posts. Tap Copy to use, or Review to edit.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="hidden"></CardContent>
+                </Card>
+              )}
+
+              <ContentDiscoveryTab />
               {previewContentId && (
-                <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                  <div className="bg-background border border-border rounded-none sm:rounded-lg shadow-2xl w-full max-w-full sm:max-w-4xl h-[90vh] sm:h-auto overflow-auto">
+                <div
+                  className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+                  role="dialog"
+                  aria-modal="true"
+                  onClick={() => setPreviewContentId(null)}
+                >
+                  <div
+                    className="bg-background border border-border rounded-none sm:rounded-lg shadow-2xl w-full max-w-full sm:max-w-4xl h-[90vh] sm:h-auto overflow-auto"
+                    onClick={(e) => e.stopPropagation()}
+                  >
                     <InlineContentPreview
                       contentId={previewContentId}
                       onClose={() => setPreviewContentId(null)}
@@ -33010,6 +42237,27 @@ function SchedulerPage() {
               <CardDescription>
                 Quick actions to schedule and manage your content
               </CardDescription>
+              <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+                <span>
+                  On-brand: Creating from here uses your Brand Guidelines +
+                  Brand Vibe.
+                </span>
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="inline-flex items-center justify-center w-4 h-4 rounded-full border text-[10px] cursor-default">
+                        i
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p className="max-w-[260px] text-xs">
+                        When you open Create from here, generation applies both
+                        your Brand Guidelines and Brand Vibe for consistency.
+                      </p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </div>
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -33289,7 +42537,11 @@ function SchedulerPage() {
                   <EmptyState
                     title="No Scheduled Posts"
                     description="You haven't scheduled any posts yet."
-                  />
+                  >
+                    <Button asChild className="mt-4">
+                      <Link to="/create">Open Content Hub</Link>
+                    </Button>
+                  </EmptyState>{" "}
                 </Card>
               )}
             </div>
@@ -33344,4 +42596,3 @@ function SchedulerPage() {
     </div>
   );
 }
-
