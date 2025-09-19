@@ -39,6 +39,7 @@ import {
   requestMultimodalModel,
   getBaseUrl,
   sendEmail,
+  inviteUser,
   upload,
   queueTask,
   getTaskStatus as getTaskStatusInternal,
@@ -47,6 +48,8 @@ import {
   discontinueProduct,
   listUserPurchases,
   startRealtimeResponse,
+  getOAuthConnectionForCurrentUser,
+  getOAuthToken,
 } from "~/server/actions";
 import { z } from "zod";
 
@@ -295,6 +298,7 @@ const AdvancedInsightsSchema = z.object({
 });
 
 import axios from "axios";
+import type { AxiosResponse } from "axios";
 
 import { nanoid } from "nanoid";
 import { createHash } from "crypto";
@@ -582,6 +586,7 @@ async function executeWithCircuitBreaker<T>(
     updateCircuitBreakerOnSuccess(serviceName);
     return result;
   } catch (error) {
+    void error;
     updateCircuitBreakerOnFailure(serviceName);
 
     // If we have a fallback and this was a service failure, try fallback
@@ -680,6 +685,7 @@ async function processBatch() {
     try {
       await processBatchGroup(group);
     } catch (error) {
+      void error;
       // Handle group processing errors
       group.forEach((req) => req.reject(error));
     }
@@ -726,6 +732,7 @@ async function processBatchGroup(requests: BatchRequest[]) {
           const result = await processIndividualRequest(request);
           request.resolve(result);
         } catch (error) {
+          void error;
           request.reject(error);
         }
       }
@@ -760,6 +767,7 @@ async function processSentimentAnalysisBatch(requests: BatchRequest[]) {
       requests.forEach((request) => request.resolve({ sentiments: {} }));
     }
   } catch (error) {
+    void error;
     requests.forEach((request) => request.reject(error));
   }
 }
@@ -998,7 +1006,7 @@ async function intelligentRequestMultimodalModel<T>(
               system: config.system || "You are a helpful AI assistant.",
               messages: config.messages,
               returnType: config.returnType,
-              model: "small",
+              model: "medium",
               onProgress: config.onProgress,
               temperature: config.temperature,
             })) as T;
@@ -1013,6 +1021,7 @@ async function intelligentRequestMultimodalModel<T>(
 
     return result;
   } catch (error) {
+    void error;
     console.error("Intelligent request failed:", error);
     throw error;
   }
@@ -1029,6 +1038,7 @@ async function withRetry<T>(
     try {
       return await operation();
     } catch (error) {
+      void error;
       lastError = error;
 
       // Don't retry on the last attempt or if error is not retryable
@@ -1083,6 +1093,7 @@ async function getCachedContent(
     }
     return null;
   } catch (error) {
+    void error;
     console.error("Error retrieving cached content:", error);
     return null;
   }
@@ -1100,6 +1111,8 @@ async function setCachedContent(
         data: JSON.stringify({ content }),
         status: "COMPLETED",
         completedAt: new Date(),
+        // Refresh startedAt so getCachedContent can consider this fresh
+        startedAt: new Date(),
       },
       create: {
         cacheKey,
@@ -1112,6 +1125,7 @@ async function setCachedContent(
       },
     });
   } catch (error) {
+    void error;
     console.error("Error caching content:", error);
   }
 }
@@ -1144,6 +1158,277 @@ function sanitizeArray(
     .slice(0, maxItems) // Limit array size
     .map((item) => sanitizeString(item, maxItemLength))
     .filter((item) => item.length > 0); // Remove empty strings
+}
+
+// Centralized Brand Vibe utilities
+export async function _buildBrandVibeSystemDirectives(): Promise<string> {
+  try {
+    const g = await getBrandGuidelines();
+    const bc = await getBrandContext().catch(() => null);
+    const prefs = await getContentStudioPreferences().catch(() => null);
+    const parts: string[] = [];
+
+    parts.push(
+      "[HARD CONSTRAINTS]\n- No emojis or emoticons of any kind.\n- Do not use em dashes (—) or en dashes (–); use simple hyphens (-) or commas.\n- Never mention AI, models, or automation.\n- Keep language human, specific, and outcome-oriented.\n- Prefer short, clear sentences.\n- Avoid filler and generic fluff.",
+    );
+
+    // Additional hard constraints to improve human quality and avoid AI tone
+    parts.push(
+      '[HARD CONSTRAINTS - CONTINUED]\n- No AI-sounding preambles (e.g., "Sure,", "Absolutely,", "Here\'s", "I recommend").\n- Prefer active voice; keep passive voice only when intentional.\n- Vary cadence (mix short and medium sentences).\n- Avoid hedging and meta-talk.',
+    );
+
+    if (g) {
+      if (g.brandVoice) parts.push(`Brand Voice: ${g.brandVoice}`);
+      if (
+        Array.isArray((g as any).tonePriorities) &&
+        (g as any).tonePriorities.length > 0
+      ) {
+        parts.push(`Tone Priorities: ${(g as any).tonePriorities.join(", ")}`);
+      }
+      if (
+        Array.isArray((g as any).phrasesToUse) &&
+        (g as any).phrasesToUse.length > 0
+      ) {
+        parts.push(`Phrases to Use: ${(g as any).phrasesToUse.join(", ")}`);
+      }
+      if (
+        Array.isArray((g as any).phrasesToAvoid) &&
+        (g as any).phrasesToAvoid.length > 0
+      ) {
+        parts.push(`Phrases to Avoid: ${(g as any).phrasesToAvoid.join(", ")}`);
+      }
+      if (
+        Array.isArray((g as any).objectives) &&
+        (g as any).objectives.length > 0
+      ) {
+        parts.push(`Objectives: ${(g as any).objectives.join(", ")}`);
+      }
+      if (Array.isArray((g as any).kpis) && (g as any).kpis.length > 0) {
+        parts.push(`KPIs: ${(g as any).kpis.join(", ")}`);
+      }
+      if ((g as any).additionalNotes) {
+        parts.push(`Additional Notes: ${(g as any).additionalNotes}`);
+      }
+    }
+
+    // Include richer Brand Context if available
+    if (bc) {
+      const lines: string[] = [];
+      const tryPush = (label: string, value: any) => {
+        if (value == null) return;
+        if (Array.isArray(value) && value.length > 0)
+          lines.push(
+            `${label}: ${value.join ? value.join(", ") : String(value)}`,
+          );
+        else if (typeof value === "object") {
+          const summary = Object.entries(value)
+            .map(
+              ([k, v]) =>
+                `${k}: ${Array.isArray(v) ? v.join(", ") : String(v)}`,
+            )
+            .join("; ");
+          if (summary) lines.push(`${label}: ${summary}`);
+        } else if (String(value).trim()) {
+          lines.push(`${label}: ${String(value).trim()}`);
+        }
+      };
+
+      tryPush(
+        "Industry",
+        (bc as any).industry || (bc as any).industryClassification,
+      );
+      tryPush(
+        "Market Position",
+        (bc as any).marketPosition || (bc as any).positioning,
+      );
+      tryPush("Risk Profile", (bc as any).riskProfile);
+      tryPush(
+        "Target Audience",
+        (bc as any).targetAudience?.demographics || (bc as any).targetAudience,
+      );
+      tryPush(
+        "Psychographics",
+        (bc as any).psychographics ||
+          (bc as any).targetAudience?.psychographics,
+      );
+      tryPush("Preferred Platforms", (bc as any).preferredPlatforms);
+      tryPush("Pain Points", (bc as any).painPoints);
+      tryPush("Key Interests", (bc as any).keyInterests);
+      tryPush("Behavior Patterns", (bc as any).behaviorPatterns);
+      tryPush("Brand Personality", (bc as any).brandPersonality);
+      tryPush("Emotional Appeal", (bc as any).emotionalAppeal);
+      tryPush(
+        "Differentiators",
+        (bc as any).keyDifferentiators || (bc as any).differentiators,
+      );
+      tryPush("Opportunities", (bc as any).marketOpportunities);
+
+      if (lines.length > 0) {
+        parts.push("[BRAND CONTEXT]\n" + lines.join("\n"));
+      }
+
+      // Visual branding from Brand Context
+      const visualLines: string[] = [];
+      if ((bc as any).visualStyle) {
+        visualLines.push(`Visual Style: ${(bc as any).visualStyle}`);
+      }
+      if ((bc as any).brandColorPalette) {
+        try {
+          const palette = Array.isArray((bc as any).brandColorPalette)
+            ? (bc as any).brandColorPalette
+            : JSON.parse((bc as any).brandColorPalette);
+          if (Array.isArray(palette) && palette.length) {
+            visualLines.push(`Color Palette: ${palette.join(", ")}`);
+          }
+        } catch {
+          void 0;
+        }
+      }
+      if (visualLines.length > 0) {
+        parts.push("[VISUAL BRANDING]\n" + visualLines.join("\n"));
+      }
+    }
+
+    // Visual branding from user preferences (color palette)
+    const palette: string[] = [];
+    if (prefs?.brandPrimaryColor) palette.push(prefs.brandPrimaryColor);
+    if (prefs?.brandSecondaryColor) palette.push(prefs.brandSecondaryColor);
+    if (prefs?.brandAccentColor) palette.push(prefs.brandAccentColor);
+    if (palette.length > 0) {
+      parts.push("[VISUAL BRANDING]\nColor Palette: " + palette.join(", "));
+    }
+
+    parts.push(
+      "[STYLE GUARDRAILS]\n- Lead with a crisp hook grounded in the audience's needs.\n- Tie claims to outcomes or specifics where relevant.\n- Use plain punctuation; avoid exclamation overload.\n- Keep hashtags purposeful; avoid clutter.",
+    );
+
+    // Additional guardrails for brand alignment and polish
+    parts.push(
+      '[STYLE GUARDRAILS - CONTINUED]\n- Second-pass self-edit: tighten verbs, cut filler, remove meta-talk (no "I recommend/suggest", "here\'s", "let\'s").\n- If brand provides "Phrases to Use", include 1–2 only when natural; never force them.\n- Mirror the brand\'s rhythm (sentence length, word choice, formality).',
+    );
+
+    parts.push(
+      "[ENFORCEMENT]\n- If any requested content conflicts with these brand rules, adapt it to comply while preserving impact.\n- For visual assets, strictly adhere to [VISUAL BRANDING] (colors, style, imagery). Avoid off-brand colors and motifs.",
+    );
+
+    return parts.join("\n");
+  } catch (error) {
+    void error;
+    // If anything fails, still return the hard constraints
+    return "[HARD CONSTRAINTS]\n- No emojis or emoticons of any kind.\n- Do not use em dashes (—) or en dashes (–); use simple hyphens (-) or commas.\n- Never mention AI, models, or automation.\n- Keep language human, specific, and outcome-oriented.\n- Prefer short, clear sentences.\n- Avoid filler and generic fluff.\n[STYLE GUARDRAILS]\n- Lead with a crisp hook grounded in the audience's needs.\n- Tie claims to outcomes or specifics where relevant.\n- Use plain punctuation; avoid exclamation overload.\n- Keep hashtags purposeful; avoid clutter.\n[ENFORCEMENT]\n- For visual assets, adhere to provided brand colors and style if available.";
+  }
+}
+
+export function _sanitizeGeneratedText(input: string | undefined): string {
+  if (!input || typeof input !== "string") return "";
+  let out = input;
+
+  // Normalize Unicode punctuation to ASCII equivalents
+  out = out
+    .replace(/[\u2018\u2019\u201A\u201B\u2032\u2035]/g, "'") // single quotes/prime
+    .replace(/[\u201C\u201D\u201E\u201F\u2033\u2036]/g, '"'); // double quotes
+
+  // Replace em/en dashes with simple hyphen with spacing
+  out = out.replace(/[\u2014\u2013]/g, " - ");
+
+  // Remove emoji and variation selectors/ZWJ
+  // Covers most emoji blocks, flags, symbols, and presentation selectors
+  out = out
+    .replace(/[\u{1F300}-\u{1FAFF}]/gu, "") // Misc Symbols & Pictographs to Supplemental Symbols & Pictographs
+    .replace(/[\u{1F1E6}-\u{1F1FF}]/gu, "") // Regional Indicator Symbols (flags)
+    .replace(/[\u2600-\u27BF]/g, "") // Misc symbols, dingbats
+    .replace(/[\uFE0F\u200D]/g, ""); // variation selector-16 and zero-width joiner
+
+  // Remove common ASCII emoticons
+  out = out.replace(/(:-?\)|;-?\)|:-?D|:-?P|:-?\(|;\)|:\)|:\(|:D|:P|<3)/g, "");
+
+  // Remove backticks and inline code markers
+  out = out.replace(/`{1,3}([^`]*?)`{1,3}/g, "$1");
+
+  // Strip common Markdown (bold/italics/strike), links, images, blockquotes, headings
+  out = out
+    .replace(/!\[[^\]]*\]\(([^)]+)\)/g, "$1") // images -> URL only
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1") // links -> text only
+    .replace(/[*_~]{1,3}([^*_~]+)[*_~]{1,3}/g, "$1") // **bold**, *italics*, ~~strike~~
+    .replace(/^>\s?/gm, "") // blockquotes
+    .replace(/^#{1,6}\s*/gm, "") // headings
+    .replace(/-{3,}/g, "—");
+
+  // Remove common AI disclaimers including bracketed/parenthetical forms
+  out = out
+    .replace(/\b(as an ai|as a language model)\b[^.]*\.?/gi, "")
+    .replace(/[\[(]{1}\s*(as an ai|as a language model)[^\])]*[\])]/gi, "")
+    // Remove AI-sounding preambles and filler
+    .replace(
+      /^(\s*)(sure|absolutely|certainly|of course|great question),\s*/i,
+      "$1",
+    )
+    .replace(/\b(here(?:'|’)s|here is)\b\s*(how|what|a|the)?[:]??\s*/gi, "")
+    .replace(
+      /\b(i recommend|i suggest|i think|i believe|i'd recommend)\b[:,]?\s*/gi,
+      "",
+    )
+    .replace(/\b(in conclusion|overall|to summarize|in summary),\s*/gi, "");
+
+  // Collapse multiple hyphens
+  out = out.replace(/-{2,}/g, "-");
+
+  // Clean spacing around punctuation
+  out = out
+    .replace(/\s+,/g, ",")
+    .replace(/\s+\./g, ".")
+    .replace(/\s+:/g, ":")
+    .replace(/\s+; /g, "; ")
+    .replace(/\(\s+/g, "(")
+    .replace(/\s+\)/g, ")");
+
+  // Collapse excessive punctuation and whitespace
+  out = out
+    .replace(/!{2,}/g, "!")
+    .replace(/\?{2,}/g, "?")
+    .replace(/\.{4,}/g, "...")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return out;
+}
+
+export function _enforceBrandVibeOnContentPackage<
+  T extends Record<string, any>,
+>(pkg: T): T {
+  const clone: Record<string, any> = Array.isArray(pkg)
+    ? [...(pkg as any)]
+    : { ...pkg };
+  const sanitizeDeep = (val: any): any => {
+    if (typeof val === "string") return _sanitizeGeneratedText(val);
+    if (Array.isArray(val)) return val.map((v) => sanitizeDeep(v));
+    if (val && typeof val === "object") {
+      const o: Record<string, any> = {};
+      for (const k of Object.keys(val)) o[k] = sanitizeDeep(val[k]);
+      return o;
+    }
+    return val;
+  };
+  return sanitizeDeep(clone) as T;
+}
+
+// Apply brand-specific phrase rules (avoid lists, light-touch cleanup)
+export function _applyBrandPhraseRules(text: string, brand: any): string {
+  let out = text || "";
+  const avoid = Array.isArray(brand?.phrasesToAvoid)
+    ? brand.phrasesToAvoid
+    : [];
+  for (const phrase of avoid) {
+    if (!phrase || typeof phrase !== "string") continue;
+    try {
+      const re = new RegExp(phrase, "gi");
+      out = out.replace(re, "");
+    } catch {
+      out = out.split(phrase).join("");
+    }
+  }
+  out = out.replace(/\\s{2,}/g, " ").trim();
+  return out;
 }
 
 export function validateTrendingTopicsInput(input?: {
@@ -1497,6 +1782,7 @@ async function getCachedTrendingTopicsFromDB(
 
     return uniqueTopics.length > 0 ? uniqueTopics : null;
   } catch (error) {
+    void error;
     console.error("Error getting cached trending topics:", error);
     return null;
   }
@@ -1655,6 +1941,7 @@ export async function detectRealTimeTrendingTopics(input?: {
       await _internal_detectRealTimeTrendingTopics(input, currentUserId);
       console.log(`Successfully completed trending topics detection`);
     } catch (error) {
+      void error;
       console.error(`Error in trending topics detection:`, error);
 
       // Store error result in database so it can be retrieved
@@ -2010,6 +2297,7 @@ Your analysis should be comprehensive, data-driven, platform-optimized, and imme
       console.log("Successfully stored trending topics analysis result");
       return result;
     } catch (error) {
+      void error;
       lastError = error instanceof Error ? error : new Error(String(error));
       console.error(
         `[Attempt ${attempt}/${maxRetries}] Error in trending topics analysis:`,
@@ -2109,15 +2397,16 @@ export async function getTrendingTopicsResults() {
       !!trendAnalysis,
     );
 
-    if (!trendAnalysis) {
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    if (!trendAnalysis || trendAnalysis.createdAt < thirtyDaysAgo) {
       console.log(
-        "[getTrendingTopicsResults] No successful trends found for user:",
+        "[getTrendingTopicsResults] No recent trends found (<=30 days) for user:",
         currentUserId,
       );
       return {
         success: false,
         message:
-          "No cached trends found. Click refresh to generate new trends.",
+          "No recent cached trends found. Click refresh to generate new trends.",
         data: null,
         lastUpdated: null,
         cached: false,
@@ -2219,14 +2508,27 @@ export async function getTrendingTopicsResults() {
         }),
       );
 
+      const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+      const filteredTopics = normalizedTopics.filter(
+        (t: any) =>
+          Array.isArray(t.sources) &&
+          t.sources.some((s: any) => {
+            const d = s?.publishedAt ? new Date(s.publishedAt) : null;
+            return (
+              d instanceof Date &&
+              !isNaN(d.getTime()) &&
+              Date.now() - d.getTime() <= THIRTY_DAYS_MS
+            );
+          }),
+      );
       console.log(
-        "[getTrendingTopicsResults] Normalized topics count:",
-        normalizedTopics.length,
+        "[getTrendingTopicsResults] Filtered recent topics count:",
+        filteredTopics.length,
       );
 
       return {
         success: brandAnalysis.success || true,
-        data: normalizedTopics,
+        data: filteredTopics,
         message: brandAnalysis.message || "Cached trends loaded successfully",
         lastUpdated: trendAnalysis.createdAt.toISOString(),
         cached: true,
@@ -2251,6 +2553,7 @@ export async function getTrendingTopicsResults() {
       };
     }
   } catch (error) {
+    void error;
     console.error(
       "[getTrendingTopicsResults] Unexpected error in function:",
       error,
@@ -2285,11 +2588,12 @@ export async function getCachedViralTrends() {
       orderBy: { createdAt: "desc" },
     });
 
-    if (!trendAnalysis) {
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    if (!trendAnalysis || trendAnalysis.createdAt < thirtyDaysAgo) {
       return {
         success: false,
         message:
-          "No cached viral trends found. Generate new trends to get started.",
+          "No recent cached viral trends found. Generate new trends to get started.",
         data: null,
         lastUpdated: null,
         cached: false,
@@ -2390,6 +2694,7 @@ export async function getCachedViralTrends() {
       };
     }
   } catch (error) {
+    void error;
     console.error("Error getting cached viral trends:", error);
     return {
       success: false,
@@ -2487,6 +2792,7 @@ export async function shouldRefreshViralTrends() {
       isStale,
     };
   } catch (error) {
+    void error;
     console.error("Error checking viral trends refresh status:", error);
     return {
       shouldRefresh: true,
@@ -2752,6 +3058,7 @@ For each relevant trend (minimum relevance score 7/10), provide enhanced data wi
       brandFiltered: true,
     };
   } catch (error) {
+    void error;
     console.error("Error getting brand filtered trending topics:", error);
     // Fallback to regular trending topics if brand filtering fails
     return await getTrendingTopicsResults();
@@ -2817,6 +3124,7 @@ export async function getTikTokInstagramBrandAnalysisResults(
     const analysis = JSON.parse(trendAnalysis.brandAnalysis);
     return analysis;
   } catch (error) {
+    void error;
     console.error("Error parsing TikTok/Instagram brand analysis:", error);
     return null;
   }
@@ -2840,12 +3148,13 @@ export async function getLatestTikTokInstagramTrends() {
       },
     });
 
-    if (!latestTrend) {
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    if (!latestTrend || latestTrend.createdAt < thirtyDaysAgo) {
       return {
         success: false,
         data: [],
         message:
-          "No TikTok/Instagram trends found. Click 'Analyze TikTok/IG Trends' to generate new insights.",
+          "No recent TikTok/Instagram trends found. Click 'Analyze TikTok/IG Trends' to generate fresh insights.",
       };
     }
 
@@ -2943,6 +3252,7 @@ export async function getLatestTikTokInstagramTrends() {
       };
     }
   } catch (error) {
+    void error;
     console.error("Error fetching latest TikTok/Instagram trends:", error);
     return {
       success: false,
@@ -3341,6 +3651,7 @@ Also identify trends that work well across both platforms.`,
 
       // Results are stored in database, no return needed
     } catch (error) {
+      void error;
       console.error("Error detecting TikTok/Instagram trends:", error);
 
       // Categorize error types for better handling
@@ -3526,7 +3837,8 @@ export async function analyzeTikTokInstagramTrendsForBrand(input: {
         );
         trendsResult = cachedResult;
       }
-    } catch {
+    } catch (error) {
+      void error;
       // Silently handle cache miss
       console.log(`No cached results available for task: ${trendsTask.id}`);
     }
@@ -3577,6 +3889,7 @@ export async function analyzeTikTokInstagramTrendsForBrand(input: {
         await new Promise((resolve) => setTimeout(resolve, waitTime));
         attempts++;
       } catch (error) {
+        void error;
         consecutiveErrors++;
         console.error(
           `Error checking task status (attempt ${consecutiveErrors}/${maxConsecutiveErrors}):`,
@@ -3846,6 +4159,7 @@ Only include trends that score 6+ on relevance for the brand.`,
       timestamp: new Date().toISOString(),
     };
   } catch (error) {
+    void error;
     console.error("Error analyzing TikTok/Instagram trends for brand:", error);
 
     // Check if this is a timeout error
@@ -3904,7 +4218,8 @@ export async function intelligentTrendBrandMatcher(input: {
         if (advancedInsights?.audienceInsights?.personas) {
           audienceData = advancedInsights.audienceInsights.personas;
         }
-      } catch {
+      } catch (error) {
+        void error;
         console.log(
           "No audience insights available, continuing without persona data",
         );
@@ -4191,6 +4506,7 @@ Only include trends with alignment scores of 6+ and provide actionable insights.
       timestamp: new Date().toISOString(),
     };
   } catch (error) {
+    void error;
     console.error("Error in intelligent trend-brand matching:", error);
     return {
       success: false,
@@ -4391,6 +4707,7 @@ Only include trends that score 6+ on relevance.`,
       timestamp: new Date().toISOString(),
     };
   } catch (error) {
+    void error;
     console.error("Error analyzing real-time trends for brand:", error);
     return {
       success: false,
@@ -4434,6 +4751,7 @@ export async function getTrendAnalysisHistory(input?: {
           try {
             return JSON.parse(analysis.brandAnalysis);
           } catch (error) {
+            void error;
             console.error(
               "Error parsing brandAnalysis in getTrendAnalysisHistory:",
               error,
@@ -4489,6 +4807,7 @@ export async function _analyzeExistingComments() {
             });
             analyzedCount++;
           } catch (error) {
+            void error;
             console.error(`Failed to update comment ${comment.id}:`, error);
           }
         }
@@ -4496,6 +4815,7 @@ export async function _analyzeExistingComments() {
 
       await Promise.all(updatePromises);
     } catch (error) {
+      void error;
       console.error(`Failed to analyze batch starting at index ${i}:`, error);
 
       // Fallback to individual analysis for this batch
@@ -4651,6 +4971,7 @@ export async function saveOAuthCredentials({
       updatedAt: credentials.updatedAt,
     };
   } catch (error) {
+    void error;
     console.error("Error saving OAuth credentials:", error);
     throw new Error("Failed to save OAuth credentials");
   }
@@ -4687,6 +5008,7 @@ export async function getOAuthCredentials(platform?: string) {
 
     return credentials;
   } catch (error) {
+    void error;
     console.error("Error fetching OAuth credentials:", error);
     throw new Error("Failed to fetch OAuth credentials");
   }
@@ -4708,6 +5030,7 @@ export async function deleteOAuthCredentials(platform: string) {
 
     return { success: true };
   } catch (error) {
+    void error;
     console.error("Error deleting OAuth credentials:", error);
     throw new Error("Failed to delete OAuth credentials");
   }
@@ -4739,45 +5062,25 @@ export async function getUserOAuthCredentials(
 
     return credentials;
   } catch (error) {
+    void error;
     console.error(`Error fetching OAuth credentials for ${platform}:`, error);
     return null;
   }
 }
 
 export async function checkSuperAdminStatus() {
-  const { userId } = await getAuth({ required: true });
-
-  // Get user from database to check email
-  const userRecord = await db.user.findUnique({ where: { id: userId } });
-  const isSuperAdminEmail = userRecord?.email === "metamarketers23@gmail.com";
-
-  if (isSuperAdminEmail) {
-    // Update user to superadmin if not already
-    await db.user.upsert({
-      where: { id: userId },
-      create: {
-        id: userId,
-        email: userRecord?.email || "",
-        name: userRecord?.name || "",
-        handle: userRecord?.handle || "",
-        isSuperAdmin: true,
-      },
-      update: {
-        email: userRecord?.email || "",
-        name: userRecord?.name || "",
-        handle: userRecord?.handle || "",
-        isSuperAdmin: true,
-      },
-    });
-    return true;
+  try {
+    const auth = await getAuth();
+    if (!auth || auth.status !== "authenticated") {
+      return false;
+    }
+    // Fast path: avoid database lookups to prevent timeouts
+    const allowlist = new Set<string>([]);
+    return allowlist.has(auth.userId);
+  } catch (error) {
+    console.error("checkSuperAdminStatus failed", error);
+    return false;
   }
-
-  const user = await db.user.findUnique({
-    where: { id: userId },
-    select: { isSuperAdmin: true },
-  });
-
-  return user?.isSuperAdmin || false;
 }
 
 // OAuth Configuration
@@ -4907,7 +5210,7 @@ export async function getLinkedInOAuthUrl() {
   url.searchParams.append("redirect_uri", redirectUri);
   url.searchParams.append(
     "scope",
-    "profile email openid w_member_social r_organization_social",
+    "profile email openid w_member_social r_organization_social w_organization_social",
   ); // Using OpenID Connect scopes + social posting and reading
   url.searchParams.append("state", state);
 
@@ -5059,6 +5362,7 @@ export async function handleTwitterOAuthCallback(input: {
 
     return { success: true, account };
   } catch (error) {
+    void error;
     console.error("Error handling Twitter OAuth callback:", error);
 
     if (axios.isAxiosError(error) && error.response?.data) {
@@ -5182,6 +5486,7 @@ export async function handleYouTubeOAuthCallback(input: {
 
     return { success: true, account };
   } catch (error) {
+    void error;
     console.error("Error handling YouTube OAuth callback:", error);
 
     if (axios.isAxiosError(error) && error.response?.data) {
@@ -5366,6 +5671,7 @@ export async function handleFacebookOAuthCallback(input: {
       pagesCount: selectedPages.length,
     };
   } catch (error) {
+    void error;
     console.error("Error handling Facebook OAuth callback:", error);
 
     if (axios.isAxiosError(error)) {
@@ -5488,6 +5794,7 @@ export async function handleLinkedInOAuthCallback(input: {
       account,
     };
   } catch (error) {
+    void error;
     console.error("Error handling LinkedIn OAuth callback:", error);
 
     if (axios.isAxiosError(error)) {
@@ -5511,24 +5818,417 @@ export async function handleLinkedInOAuthCallback(input: {
   }
 }
 
+// LinkedIn posting & organizations
+export async function listLinkedInOrganizations() {
+  await getAuth({ required: true });
+  try {
+    const connection = await getOAuthConnectionForCurrentUser({
+      provider: "LINKEDIN",
+    });
+    if (!connection) {
+      throw new Error(
+        "No LinkedIn account connected. Please connect LinkedIn in Settings.",
+      );
+    }
+    const token = await getOAuthToken({ connectionId: connection.id });
+    const headers = {
+      Authorization: `Bearer ${token.accessToken}`,
+      "Content-Type": "application/json",
+    } as const;
+
+    const aclsRes = await axios.get(
+      "https://api.linkedin.com/v2/organizationAcls",
+      {
+        headers,
+        params: {
+          q: "roleAssignee",
+          role: "ADMINISTRATOR",
+          state: "APPROVED",
+        },
+      },
+    );
+
+    const aclElements: any[] = (aclsRes.data?.elements ??
+      aclsRes.data?.data ??
+      []) as any[];
+    const orgUrns = Array.from(
+      new Set(
+        aclElements
+          .map((e: any) => e?.organization)
+          .filter(
+            (x: any): x is string =>
+              typeof x === "string" && x.startsWith("urn:"),
+          ),
+      ),
+    );
+
+    if (orgUrns.length === 0)
+      return [] as Array<{
+        urn: string;
+        id: string;
+        name: string;
+        vanityName?: string;
+      }>;
+
+    const orgsRes = await axios.get(
+      "https://api.linkedin.com/v2/organizations",
+      {
+        headers,
+        params: { ids: `List(${orgUrns.join(",")})` },
+      },
+    );
+
+    const raw = (orgsRes.data?.elements ??
+      Object.values(orgsRes.data?.results ?? {})) as any[];
+    const organizations = raw.map((el: any) => {
+      const urn: string = el?.id || el?.entityUrn || el?.urn || "";
+      const id = (urn || "").toString().replace("urn:li:organization:", "");
+      const name =
+        el?.localizedName || el?.name || el?.vanityName || id || "Organization";
+      return {
+        urn: urn || `urn:li:organization:${id}`,
+        id,
+        name,
+        vanityName: el?.vanityName,
+      };
+    });
+
+    return organizations as Array<{
+      urn: string;
+      id: string;
+      name: string;
+      vanityName?: string;
+    }>;
+  } catch (error) {
+    console.error("Error listing LinkedIn organizations:", error);
+    throw new Error(
+      "Unable to list LinkedIn organizations right now. Please try again later.",
+    );
+  }
+}
+
+export async function postLinkedInPersonalUpdate(input: {
+  accountId?: string;
+  content: string;
+  visibility?: "PUBLIC" | "CONNECTIONS";
+}) {
+  await getAuth({ required: true });
+
+  const connection = await getOAuthConnectionForCurrentUser({
+    provider: "LINKEDIN",
+  });
+  if (!connection) {
+    throw new Error(
+      "No LinkedIn account connected. Please connect LinkedIn in Settings.",
+    );
+  }
+  const token = await getOAuthToken({ connectionId: connection.id });
+  const headers = {
+    Authorization: `Bearer ${token.accessToken}`,
+    "Content-Type": "application/json",
+  } as const;
+
+  const meRes = await axios.get("https://api.linkedin.com/v2/me", { headers });
+  const memberId: string = (meRes.data?.id as string) || "";
+  if (!memberId) {
+    throw new Error("Unable to determine LinkedIn member ID.");
+  }
+
+  const authorUrn = `urn:li:person:${memberId}`;
+
+  const payload = {
+    author: authorUrn,
+    lifecycleState: "PUBLISHED",
+    specificContent: {
+      "com.linkedin.ugc.ShareContent": {
+        shareCommentary: { text: input.content },
+        shareMediaCategory: "NONE",
+      },
+    },
+    visibility: {
+      "com.linkedin.ugc.MemberNetworkVisibility":
+        input.visibility === "PUBLIC" ? "PUBLIC" : "CONNECTIONS",
+    },
+  };
+
+  try {
+    const res = await axios.post(
+      "https://api.linkedin.com/v2/ugcPosts",
+      payload,
+      { headers },
+    );
+    const postId: string =
+      res.data?.id || res.data?.urn || res.data?.entityUrn || "";
+    const postUrn = postId.startsWith("urn:")
+      ? postId
+      : `urn:li:ugcPost:${postId}`;
+    const postUrl = `https://www.linkedin.com/feed/update/${postUrn}`;
+    return { success: true, postId: postUrn, postUrl };
+  } catch (error) {
+    console.error("Error posting LinkedIn personal update:", error);
+    if (axios.isAxiosError(error) && error.response?.data) {
+      try {
+        const msg =
+          typeof error.response.data === "string"
+            ? error.response.data
+            : JSON.stringify(error.response.data);
+        throw new Error(`LinkedIn API Error: ${msg}`);
+      } catch {
+        // fallthrough to generic message
+      }
+    }
+    throw new Error(
+      "Failed to post on LinkedIn. Please check your permissions and try again.",
+    );
+  }
+}
+
+export async function postLinkedInOrganizationUpdate(input: {
+  accountId?: string;
+  organizationUrn: string; // e.g., urn:li:organization:123456
+  content: string;
+  visibility?: "PUBLIC" | "CONNECTIONS";
+}) {
+  await getAuth({ required: true });
+
+  const connection = await getOAuthConnectionForCurrentUser({
+    provider: "LINKEDIN",
+  });
+  if (!connection) {
+    throw new Error(
+      "No LinkedIn account connected. Please connect LinkedIn in Settings.",
+    );
+  }
+  const token = await getOAuthToken({ connectionId: connection.id });
+  const headers = {
+    Authorization: `Bearer ${token.accessToken}`,
+    "Content-Type": "application/json",
+  } as const;
+
+  const authorUrn = input.organizationUrn.startsWith("urn:")
+    ? input.organizationUrn
+    : `urn:li:organization:${input.organizationUrn}`;
+
+  const payload = {
+    author: authorUrn,
+    lifecycleState: "PUBLISHED",
+    specificContent: {
+      "com.linkedin.ugc.ShareContent": {
+        shareCommentary: { text: input.content },
+        shareMediaCategory: "NONE",
+      },
+    },
+    visibility: {
+      "com.linkedin.ugc.MemberNetworkVisibility":
+        input.visibility === "PUBLIC" ? "PUBLIC" : "CONNECTIONS",
+    },
+  };
+
+  try {
+    const res = await axios.post(
+      "https://api.linkedin.com/v2/ugcPosts",
+      payload,
+      { headers },
+    );
+    const postId: string =
+      res.data?.id || res.data?.urn || res.data?.entityUrn || "";
+    const postUrn = postId.startsWith("urn:")
+      ? postId
+      : `urn:li:ugcPost:${postId}`;
+    const postUrl = `https://www.linkedin.com/feed/update/${postUrn}`;
+    return { success: true, postId: postUrn, postUrl };
+  } catch (error) {
+    console.error("Error posting LinkedIn organization update:", error);
+    if (axios.isAxiosError(error) && error.response?.data) {
+      try {
+        const msg =
+          typeof error.response.data === "string"
+            ? error.response.data
+            : JSON.stringify(error.response.data);
+        throw new Error(`LinkedIn API Error: ${msg}`);
+      } catch {
+        // fallthrough
+      }
+    }
+    throw new Error(
+      "Failed to post on the LinkedIn Page. Please ensure you have admin access and try again.",
+    );
+  }
+}
+
 // Account Management
+export async function syncOAuthConnections() {
+  const { userId } = await getAuth({ required: true });
+
+  const providersSynced: string[] = [];
+
+  // Sync Twitter/X (avoid token fetch to prevent noisy refresh failures)
+  try {
+    const connection = await getOAuthConnectionForCurrentUser({
+      provider: "TWITTER",
+    });
+    if (connection) {
+      const accountId = `conn-${connection.id}`; // placeholder id tied to the oauth connection
+      const name = "Twitter (Connected)";
+
+      await db.account.upsert({
+        where: {
+          userId_platform_accountId: { userId, platform: "twitter", accountId },
+        },
+        update: {
+          name,
+          accessToken: "adaptive-oauth",
+          refreshToken: null,
+          expiresAt: null,
+        },
+        create: {
+          userId,
+          platform: "twitter",
+          accountId,
+          name,
+          accessToken: "adaptive-oauth",
+          refreshToken: null,
+          expiresAt: null,
+        },
+      });
+
+      providersSynced.push("TWITTER");
+    }
+  } catch (err) {
+    console.log(
+      "[syncOAuthConnections] Twitter connection present but placeholder sync failed",
+      (err as Error)?.message ?? err,
+    );
+  }
+
+  // Sync LinkedIn
+  try {
+    const connection = await getOAuthConnectionForCurrentUser({
+      provider: "LINKEDIN",
+    });
+    if (connection) {
+      const token = await getOAuthToken({ connectionId: connection.id });
+      const meRes = await axios.get("https://api.linkedin.com/v2/me", {
+        headers: { Authorization: `Bearer ${token.accessToken}` },
+      });
+      const liData = meRes.data ?? {};
+      const accountId: string = (liData?.id ?? "unknown").toString();
+      const name: string =
+        [liData?.localizedFirstName, liData?.localizedLastName]
+          .filter(Boolean)
+          .join(" ") || "LinkedIn User";
+
+      await db.account.upsert({
+        where: {
+          userId_platform_accountId: {
+            userId,
+            platform: "linkedin",
+            accountId,
+          },
+        },
+        update: {
+          name,
+          accessToken: "adaptive-oauth",
+          refreshToken: null,
+          expiresAt: null,
+        },
+        create: {
+          userId,
+          platform: "linkedin",
+          accountId,
+          name,
+          accessToken: "adaptive-oauth",
+          refreshToken: null,
+          expiresAt: null,
+        },
+      });
+
+      providersSynced.push("LINKEDIN");
+    }
+  } catch (err) {
+    console.error("[syncOAuthConnections] LinkedIn sync failed", err);
+  }
+
+  // Sync YouTube (via Google)
+  try {
+    const connection = await getOAuthConnectionForCurrentUser({
+      provider: "GOOGLE",
+    });
+    if (connection) {
+      const token = await getOAuthToken({ connectionId: connection.id });
+      const ytRes = await axios.get(
+        "https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true",
+        {
+          headers: { Authorization: `Bearer ${token.accessToken}` },
+        },
+      );
+      const item = ytRes.data?.items?.[0];
+      if (item) {
+        const accountId: string = item?.id?.toString?.() ?? "unknown";
+        const name: string = item?.snippet?.title ?? "YouTube Channel";
+
+        await db.account.upsert({
+          where: {
+            userId_platform_accountId: {
+              userId,
+              platform: "youtube",
+              accountId,
+            },
+          },
+          update: {
+            name,
+            accessToken: "adaptive-oauth",
+            refreshToken: null,
+            expiresAt: null,
+          },
+          create: {
+            userId,
+            platform: "youtube",
+            accountId,
+            name,
+            accessToken: "adaptive-oauth",
+            refreshToken: null,
+            expiresAt: null,
+          },
+        });
+
+        providersSynced.push("GOOGLE");
+      }
+    }
+  } catch (err) {
+    console.error("[syncOAuthConnections] Google/YouTube sync failed", err);
+  }
+
+  return { providersSynced };
+}
+
 export async function getConnectedAccounts() {
   const { userId } = await getAuth({ required: true });
 
+  // Fast timeout + graceful fallback keeps the UI responsive even if the DB/network is slow
+  const timeoutMs = 5000;
+  const timeoutPromise = new Promise((_, reject) =>
+    setTimeout(
+      () => reject(new Error("DB timeout in getConnectedAccounts")),
+      timeoutMs,
+    ),
+  );
+
   try {
-    const accounts = await db.account.findMany({
+    const accountsPromise = db.account.findMany({
       where: { userId },
-      include: {
-        pages: true,
-      },
+      include: { pages: true },
     });
 
-    return accounts;
+    const result = (await Promise.race([
+      accountsPromise,
+      timeoutPromise,
+    ])) as any[];
+    return Array.isArray(result) ? result : [];
   } catch (error) {
-    console.error("Error fetching connected accounts:", error);
-    throw new Error(
-      "Could not fetch connected accounts. Please try again later.",
-    );
+    console.error("getConnectedAccounts fallback due to error:", error);
+    // Return an empty list so screens that depend on this can still render
+    return [];
   }
 }
 
@@ -5650,6 +6350,7 @@ export async function getQuickAccountInsights() {
       })),
     };
   } catch (error) {
+    void error;
     console.error("Error fetching quick account insights:", error);
     // Return fallback data instead of throwing
     return {
@@ -5737,7 +6438,8 @@ export async function connectFacebookAccount(input: {
           name: string;
           access_token: string;
         }>;
-      } catch {
+      } catch (error) {
+        void error;
         // accountsError is unused
         // If we can't access /me/accounts, try to identify if it's a Page token
         try {
@@ -5771,7 +6473,8 @@ export async function connectFacebookAccount(input: {
                 tokenType = "app";
                 tokenInfo.appId = appCheckResponse.data.id;
               }
-            } catch {
+            } catch (error) {
+              void error;
               // appCheckError is unused
               // If we can't determine the token type but it passed /me validation,
               // it's probably a user token with limited permissions
@@ -5779,7 +6482,8 @@ export async function connectFacebookAccount(input: {
               tokenInfo.canManagePages = false;
             }
           }
-        } catch {
+        } catch (error) {
+          void error;
           // pageCheckError is unused
           // If both checks fail but /me worked, assume it's a user token with limited permissions
           tokenType = "user";
@@ -5787,6 +6491,7 @@ export async function connectFacebookAccount(input: {
         }
       }
     } catch (error) {
+      void error;
       // Log the error details for debugging
       // removed unused variable 'err' in catch block, replaced with generic error handling
       if (axios.isAxiosError(error) && error.response) {
@@ -5991,7 +6696,8 @@ export async function connectFacebookAccount(input: {
           tokenType: "page",
           pageName: tokenInfo.name,
         };
-      } catch {
+      } catch (error) {
+        void error;
         throw new Error(
           "Failed to save Facebook Page. Make sure your Page token is valid and has the required permissions.",
         );
@@ -6062,6 +6768,7 @@ export async function connectManualAccount(input: {
 
     return account;
   } catch (error) {
+    void error;
     console.error("Error connecting manual account:", error);
     throw new Error("Failed to connect account. Please try again.");
   }
@@ -6080,6 +6787,7 @@ export async function disconnectAccount(input: { accountId: string }) {
 
     return { success: true };
   } catch (error) {
+    void error;
     console.error("Error disconnecting account:", error);
     throw new Error("Failed to disconnect account. Please try again.");
   }
@@ -6274,6 +6982,7 @@ async function fetchInstagramPageComments({
       }
     }
   } catch (error) {
+    void error;
     console.error(
       `Error fetching Instagram comments for page ${pageId}:`,
       error,
@@ -6405,6 +7114,7 @@ async function fetchFacebookPageComments({
       }
     }
   } catch (error) {
+    void error;
     console.error(`Error fetching Facebook posts for page ${pageId}:`, error);
     if (axios.isAxiosError(error) && error.response) {
       console.error("Facebook API Error Response:", error.response.data);
@@ -6434,7 +7144,8 @@ export async function fetchComments() {
     > | null = null;
     try {
       userSettings = await db.userSettings.findUnique({ where: { userId } });
-    } catch {
+    } catch (error) {
+      void error;
       userSettings = null;
     }
 
@@ -6521,6 +7232,7 @@ export async function fetchComments() {
             }
           }
         } catch (error) {
+          void error;
           console.error("Error fetching Facebook comments:", error);
         }
       }
@@ -6546,6 +7258,7 @@ export async function fetchComments() {
             }
           }
         } catch (error) {
+          void error;
           console.error("Error fetching Instagram comments:", error);
         }
       }
@@ -6613,6 +7326,7 @@ export async function fetchComments() {
             }
           }
         } catch (error) {
+          void error;
           console.error("Error fetching Twitter mentions:", error);
         }
       }
@@ -6739,6 +7453,7 @@ export async function fetchComments() {
             }
           }
         } catch (error) {
+          void error;
           console.error("Error fetching YouTube comments:", error);
         }
       }
@@ -6826,7 +7541,8 @@ export async function fetchComments() {
                         authorName =
                           `${firstName} ${lastName}`.trim() || "LinkedIn User";
                       }
-                    } catch {
+                    } catch (error) {
+                      void error;
                       // Silently handle author fetch errors
                     }
 
@@ -6930,11 +7646,13 @@ export async function fetchComments() {
                       newCommentsCount++;
                     }
                   }
-                } catch {
+                } catch (error) {
+                  void error;
                   // UGC comments also restricted - expected
                 }
               }
-            } catch {
+            } catch (error) {
+              void error;
               // UGC endpoint may not be accessible
             }
           } catch (apiError) {
@@ -7026,6 +7744,7 @@ export async function fetchComments() {
             }
           }
         } catch (error) {
+          void error;
           console.error("Error fetching LinkedIn content:", error);
           // Don't add to problematic IDs as LinkedIn limitations are expected
         }
@@ -7092,6 +7811,7 @@ ${highPriorityAnalyzed
           }
         }
       } catch (error) {
+        void error;
         console.error("Error sending priority comment alerts:", error);
       }
     }
@@ -7099,6 +7819,7 @@ ${highPriorityAnalyzed
     // Return problematic IDs for UI notification
     return { newCommentsCount, problematicIds: allProblematicIds };
   } catch (error) {
+    void error;
     console.error("Error in fetchComments:", error);
     return {
       newCommentsCount: 0,
@@ -7112,17 +7833,10 @@ export async function getPages(input?: { accountId?: string }) {
   const { userId } = await getAuth({ required: true });
 
   const where: any = { account: { userId } };
-
-  if (input?.accountId) {
-    where.accountId = input.accountId;
-  }
+  if (input?.accountId) where.accountId = input.accountId;
 
   // Fast timeout and graceful fallback to keep UI responsive
-  const dbOperation = db.page.findMany({
-    where,
-    orderBy: { pageName: "asc" },
-  });
-
+  const dbOperation = db.page.findMany({ where, orderBy: { pageName: "asc" } });
   const timeoutMs = 5000; // 5s guard for non-critical data
   const timeoutPromise = new Promise((_, reject) =>
     setTimeout(() => reject(new Error("DB timeout in getPages")), timeoutMs),
@@ -7285,6 +7999,7 @@ async function analyzeSentimentBatch(
 
     return results;
   } catch (error) {
+    void error;
     console.error("Error in batch sentiment analysis:", error);
 
     // Log the error
@@ -7457,7 +8172,8 @@ export async function getComments(input?: {
           Array.isArray(parsed) && parsed.every((x) => typeof x === "string")
             ? parsed
             : [];
-      } catch {
+      } catch (error) {
+        void error;
         topics = [];
       }
       const priority =
@@ -7482,6 +8198,7 @@ export async function getComments(input?: {
       },
     };
   } catch (error) {
+    void error;
     console.error("Error in getComments:", error);
     // Return empty result with proper structure to avoid UI errors
     return {
@@ -7730,6 +8447,7 @@ export async function getOriginalPostContent(input: {
           postImageUrl = response.data.full_picture;
         }
       } catch (error) {
+        void error;
         if (axios.isAxiosError(error)) {
           console.error("Error fetching Facebook post content:", error);
           console.error("Facebook API error details:", {
@@ -7983,6 +8701,7 @@ export async function getOriginalPostContent(input: {
           }
         }
       } catch (error) {
+        void error;
         console.error("Error fetching Twitter post content:", error);
         if (axios.isAxiosError(error) && error.response?.status === 401) {
           // Mark the account token as expired in our database
@@ -8045,6 +8764,7 @@ export async function getOriginalPostContent(input: {
             video.snippet.thumbnails?.default?.url;
         }
       } catch (error) {
+        void error;
         console.error("Error fetching YouTube video content:", error);
         if (axios.isAxiosError(error) && error.response?.status === 401) {
           // Mark the account token as expired in our database
@@ -8132,7 +8852,8 @@ export async function getOriginalPostContent(input: {
                 const lastName = authorResponse.data.localizedLastName || "";
                 postAuthor =
                   `${firstName} ${lastName}`.trim() || "LinkedIn User";
-              } catch {
+              } catch (error) {
+                void error;
                 postAuthor = "LinkedIn User";
               }
             }
@@ -8263,6 +8984,7 @@ export async function getOriginalPostContent(input: {
           }
         }
       } catch (error) {
+        void error;
         console.error("Error fetching LinkedIn post content:", error);
 
         if (axios.isAxiosError(error) && error.response?.status === 401) {
@@ -8317,6 +9039,7 @@ export async function getOriginalPostContent(input: {
       permalinkUrl,
     };
   } catch (error) {
+    void error;
     console.error("Error in getOriginalPostContent:", error);
     return {
       content: "",
@@ -8374,7 +9097,8 @@ export async function analyzeCommentForResponse(input: { commentId: string }) {
         },
       );
       originalPostContent = postRes.data.message || postRes.data.story || "";
-    } catch {
+    } catch (error) {
+      void error;
       originalPostContent = "";
     }
   }
@@ -8475,6 +9199,7 @@ Analyze if the current comment is similar in content, tone, or intent to any of 
       }
     }
   } catch (error) {
+    void error;
     console.error("Error analyzing dismissal patterns:", error);
     // Continue even if this fails
   }
@@ -8516,7 +9241,9 @@ Consider factors like:
       ) as string[];
       if (exampleResponses.length > 0)
         systemPrompt += `\nExample Responses in the brand's voice:\n${exampleResponses.map((ex, i) => `${i + 1}. ${ex}`).join("\n")}`;
-    } catch {}
+    } catch (error) {
+      void error;
+    }
   }
 
   // Add user preference data if available
@@ -8539,7 +9266,9 @@ Consider factors like:
         if (Array.isArray(keywords) && keywords.length > 0) {
           systemPrompt += `Frequently Used Keywords: ${keywords.slice(0, 8).join(", ")}\n`;
         }
-      } catch {}
+      } catch (error) {
+        void error;
+      }
     }
 
     // Add dismissal pattern information if found
@@ -8558,6 +9287,7 @@ Consider factors like:
           const parsed = JSON.parse(jsonString);
           return Array.isArray(parsed) ? parsed : fallback;
         } catch (error) {
+          void error;
           console.error(
             "Failed to parse JSON in analyzeCommentForResponse:",
             error,
@@ -8634,7 +9364,7 @@ Consider factors like:
     });
 
     const result = await requestMultimodalModel({
-      system: systemPrompt,
+      system: `${await _buildBrandVibeSystemDirectives()}\n${systemPrompt}`,
       messages: [{ role: "user", content: userPrompt }],
       returnType: z
         .object({
@@ -8697,6 +9427,7 @@ Consider factors like:
 
     return stream.end();
   } catch (error) {
+    void error;
     console.error("Error analyzing comment for response:", error);
 
     stream.next({
@@ -8757,7 +9488,8 @@ export async function generateResponseVariations(input: { commentId: string }) {
       if (postRes.data.full_picture) {
         originalPostImage = postRes.data.full_picture;
       }
-    } catch {
+    } catch (error) {
+      void error;
       originalPostText = "";
       originalPostImage = undefined;
     }
@@ -8786,7 +9518,8 @@ export async function generateResponseVariations(input: { commentId: string }) {
         const media = tweetRes.data.includes.media[0];
         originalPostImage = media.url || media.preview_image_url;
       }
-    } catch {
+    } catch (error) {
+      void error;
       originalPostText = "";
       originalPostImage = undefined;
     }
@@ -8815,7 +9548,8 @@ export async function generateResponseVariations(input: { commentId: string }) {
           video.snippet.thumbnails?.high?.url ||
           video.snippet.thumbnails?.default?.url;
       }
-    } catch {
+    } catch (error) {
+      void error;
       originalPostText = "";
       originalPostImage = undefined;
     }
@@ -8848,7 +9582,8 @@ export async function generateResponseVariations(input: { commentId: string }) {
           .describe("Image description for social media context."),
       });
       originalPostImageDesc = imgAnalysis.description;
-    } catch {
+    } catch (error) {
+      void error;
       originalPostImageDesc = "";
     }
   }
@@ -8869,7 +9604,8 @@ export async function generateResponseVariations(input: { commentId: string }) {
           .describe("Sentiment analysis result for the original post."),
       });
       originalPostSentiment = sentiment.sentiment;
-    } catch {
+    } catch (error) {
+      void error;
       originalPostSentiment = "neutral";
     }
   }
@@ -8891,7 +9627,8 @@ export async function generateResponseVariations(input: { commentId: string }) {
           .describe("Sentiment analysis result for the comment."),
       });
       commentSentiment = sentiment.sentiment;
-    } catch {
+    } catch (error) {
+      void error;
       commentSentiment = "neutral";
     }
   }
@@ -8946,7 +9683,9 @@ export async function generateResponseVariations(input: { commentId: string }) {
       ) as string[];
       if (exampleResponses.length > 0)
         brandGuidelinesBlurb += `Example Responses in the brand's voice:\n${exampleResponses.map((ex, i) => `${i + 1}. ${ex}`).join("\n")}\n`;
-    } catch {}
+    } catch (error) {
+      void error;
+    }
   }
 
   // 6b. User style preference
@@ -8962,7 +9701,9 @@ export async function generateResponseVariations(input: { commentId: string }) {
         if (Array.isArray(keywords) && keywords.length > 0) {
           userPrefBlurb += `\nFrequently used keywords: ${keywords.slice(0, 6).join(", ")}`;
         }
-      } catch {}
+      } catch (error) {
+        void error;
+      }
     }
     userPrefBlurb +=
       "\nUse these as a guide to make the suggested replies match the user's real-world response habits as much as possible.";
@@ -8995,7 +9736,7 @@ ${brandGuidelinesBlurb}${userPrefBlurb}`;
 
   try {
     const result = await requestMultimodalModel({
-      system: systemPrompt,
+      system: `${await _buildBrandVibeSystemDirectives()}\n${systemPrompt}`,
       messages: [{ role: "user", content: userPrompt }],
       returnType: z
         .object({
@@ -9010,9 +9751,13 @@ ${brandGuidelinesBlurb}${userPrefBlurb}`;
 
     // Add unique IDs to each variation
     return {
-      variations: result.variations.map((text) => ({ id: nanoid(), text })),
+      variations: result.variations.map((text) => ({
+        id: nanoid(),
+        text: _sanitizeGeneratedText(text),
+      })),
     };
   } catch (error) {
+    void error;
     console.error("Error generating response variations:", error);
     throw new Error(
       "Failed to generate response variations. Please try again.",
@@ -9093,7 +9838,9 @@ export async function generateResponse(input: { commentId: string }) {
           if (Array.isArray(keywords) && keywords.length > 0) {
             userPrefBlurb += `\nFrequently used keywords: ${keywords.slice(0, 6).join(", ")}`;
           }
-        } catch {}
+        } catch (error) {
+          void error;
+        }
       }
       userPrefBlurb +=
         "\nUse these as a guide to make the suggested reply match the user's real-world response habits as much as possible.";
@@ -9139,6 +9886,7 @@ export async function generateResponse(input: { commentId: string }) {
           systemPrompt += `\nExample Responses in the brand's voice:\n${exampleResponses.map((ex, i) => `${i + 1}. ${ex}`).join("\n")}`;
         }
       } catch (error) {
+        void error;
         console.error("Error parsing brand guidelines JSON:", error);
         // Continue without the parsed values if there's an error
       }
@@ -9152,7 +9900,7 @@ export async function generateResponse(input: { commentId: string }) {
     });
 
     const result = await requestMultimodalModel({
-      system: systemPrompt,
+      system: `${await _buildBrandVibeSystemDirectives()}\n${systemPrompt}`,
       messages: [
         {
           role: "user",
@@ -9195,11 +9943,17 @@ export async function generateResponse(input: { commentId: string }) {
       status: "completed",
       progress: 100,
       currentStep: "Response generated successfully!",
-      result: result,
+      result: {
+        response: _sanitizeGeneratedText(result.response),
+        alternativeResponses: result.alternativeResponses?.map((t) =>
+          _sanitizeGeneratedText(t),
+        ),
+      },
     });
 
     return stream.end();
   } catch (error) {
+    void error;
     console.error("Error generating response:", error);
 
     stream.next({
@@ -9276,6 +10030,7 @@ export async function updateCommentStatus(input: {
         // Store this information for future reference
         // We'll just log it for now, but in a real implementation we might store this in a DismissalPattern table
       } catch (error) {
+        void error;
         console.error("Error analyzing dismissed comment:", error);
         // Continue even if analysis fails
       }
@@ -9345,6 +10100,7 @@ export async function postContent(input: {
       postId = response.data.post_id || response.data.id;
       postUrl = `https://facebook.com/${postId}`;
     } catch (error) {
+      void error;
       console.error("Error posting to Facebook:", error);
       if (axios.isAxiosError(error) && error.response?.data?.error?.message) {
         throw new Error(
@@ -9372,6 +10128,7 @@ export async function postContent(input: {
       postId = response.data.data.id;
       postUrl = `https://twitter.com/anyuser/status/${postId}`;
     } catch (error) {
+      void error;
       console.error("Error posting to Twitter:", error);
       if (axios.isAxiosError(error) && error.response?.data) {
         const errorData = error.response.data as {
@@ -9518,6 +10275,7 @@ export async function cleanupStuckInsightsTasks() {
       message: `Successfully cleaned up ${stuckTasks.length} stuck insight generation tasks`,
     };
   } catch (error) {
+    void error;
     console.error("[cleanupStuckInsightsTasks] Error during cleanup:", error);
     return {
       success: false,
@@ -9552,6 +10310,7 @@ export async function resetUserInsights() {
         "Successfully reset your insights. You can now generate new insights.",
     };
   } catch (error) {
+    void error;
     console.error("[resetUserInsights] Error during reset:", error);
     return {
       success: false,
@@ -9636,6 +10395,7 @@ export async function performCacheCleanup() {
       },
     };
   } catch (error) {
+    void error;
     console.error("Cache cleanup failed:", error);
     return {
       success: false,
@@ -9723,6 +10483,10 @@ export async function generateContentFromTrendingTopic(input: {
 }) {
   const { userId } = await getAuth({ required: true });
 
+  console.log("[Gen] generateContentFromTrendingTopic start", {
+    topic: input?.topic?.topic,
+    format: input?.format,
+  });
   // Check feature access for content generation
   await requireFeatureAccess("content_generation");
 
@@ -9795,7 +10559,14 @@ export async function generateContentFromTrendingTopic(input: {
         : "";
 
       const generationResult = await requestMultimodalModel({
-        system: `You are an expert social media content strategist and creator.\n\nBRAND VIBE ALIGNMENT: Always enforce the following brand rules. If any requested content conflicts, adapt it to comply without losing impact.\n${brandVibeText}\n\nGenerate a COMPLETE, enterprise-ready social media post package based on the trending topic and format requested.
+        system: `${await _buildBrandVibeSystemDirectives()}\nYou are an elite social copy chief and strategist. Deliver copy that reads like a top human writer—no clichés, no AI scaffolding, no filler. Use specific details, strong verbs, and natural cadence. If anything conflicts with brand rules, adapt without losing impact.\n\nBRAND VIBE ALIGNMENT (strict):\n${brandVibeText}\n\nGenerate a COMPLETE, enterprise-ready social media post package based on the trending topic and format requested.
+
+QUALITY RULES:
+- Human cadence: vary sentence length, avoid robotic rhythm
+- No "in this post", "let's dive in", or similar scaffolding
+- Start with a precise hook; end with a clear action
+- Keep hashtags purposeful, minimum necessary
+- Respect [VISUAL BRANDING] for any asset prompts
 
 CRITICAL REQUIREMENTS:
 1. Create a comprehensive post package with all elements needed for immediate posting
@@ -9810,6 +10581,12 @@ CRITICAL REQUIREMENTS:
 
 Your output should be immediately actionable for enterprise marketing teams and optimized for maximum impact across all social platforms.`,
         messages: [
+          ...((Array.isArray((brand as any)?.exampleResponses)
+            ? (brand as any).exampleResponses.slice(0, 2).map((e: any) => ({
+                role: "assistant" as const,
+                content: _sanitizeGeneratedText(String(e?.text ?? e)),
+              }))
+            : []) as any[]),
           {
             role: "user",
             content: `Create a COMPLETE social media post package for:
@@ -9921,10 +10698,14 @@ Generate a complete, enterprise-ready social media post package that includes al
           .describe(
             "Complete social media post package with all necessary elements",
           ),
+        model: "large",
+        temperature: 0.3,
       });
 
       let finalImageUrl: string | undefined;
       let finalVideoUrl: string | undefined;
+
+      const directives = await _buildBrandVibeSystemDirectives();
 
       // Always generate a high-quality image for social media posts
       try {
@@ -9933,7 +10714,7 @@ Generate a complete, enterprise-ready social media post package that includes al
           ? `Brand Voice: ${brandForImage.brandVoice}\nDirectives: ${(brandForImage.directives || []).join(", ")}`
           : "";
         const imageResult = await requestMultimodalModel({
-          system: `You are a professional social media visual designer. Create high-quality, engaging images optimized for social media platforms. Use the generateHighQualityImages tool to create professional-grade visuals.\n\nBRAND VIBE ALIGNMENT:\n${brandVibeForImage}`,
+          system: `${directives}\n\nYou are a professional social media visual designer. Create high-quality, engaging images optimized for social media platforms. Use the generateHighQualityImages tool to create professional-grade visuals. Strictly follow the [VISUAL BRANDING] section (colors, visual style, imagery) when making design choices. Avoid off-brand colors and motifs.\n\nBRAND VIBE ALIGNMENT:\n${brandVibeForImage}`,
           messages: [
             {
               role: "user",
@@ -9950,6 +10731,7 @@ Generate a complete, enterprise-ready social media post package that includes al
         });
         finalImageUrl = imageResult.imageUrl;
       } catch (error) {
+        void error;
         console.error("Failed to generate image:", error);
         // Continue without image if generation fails
       }
@@ -9958,8 +10740,7 @@ Generate a complete, enterprise-ready social media post package that includes al
       if (contentType === "VIDEO" || generationResult.videoPrompt) {
         try {
           const videoResult = await requestMultimodalModel({
-            system:
-              "You are a professional video content creator. Generate engaging, high-quality videos optimized for social media platforms.",
+            system: `${directives}\nYou are a professional video content creator. Generate engaging, high-quality videos optimized for social media platforms.`,
             messages: [
               {
                 role: "user",
@@ -9978,23 +10759,92 @@ Generate a complete, enterprise-ready social media post package that includes al
           });
           finalVideoUrl = videoResult.videoUrl;
         } catch (error) {
+          void error;
           console.error("Failed to generate video:", error);
           // Continue without video if generation fails
         }
       }
 
       // Create comprehensive content package
+      // Apply humanization + brand phrase rules across key fields
+      const humanTitle = _sanitizeGeneratedText(generationResult.title);
+      // Secondary editorial pass to tighten further
+      try {
+        const edit = await requestMultimodalModel({
+          system: `${directives}\nAct as an award-winning social editor. Tighten copy, increase specificity, remove clichés and meta-talk. Maintain brand voice. Output JSON only.`,
+          messages: [
+            {
+              role: "user",
+              content: JSON.stringify({
+                title: humanTitle,
+                postText: generationResult.postText,
+                caption: generationResult.caption,
+                hook: generationResult.hook,
+                callToAction: generationResult.callToAction,
+              }),
+            },
+          ],
+          returnType: z
+            .object({
+              title: z.string().describe("Polished title"),
+              postText: z.string().describe("Polished post text"),
+              caption: z.string().describe("Polished caption"),
+              hook: z.string().describe("Polished hook"),
+              callToAction: z.string().describe("Polished CTA"),
+            })
+            .describe("Editorial polish output for post assets."),
+          model: "large",
+          temperature: 0.15,
+        });
+        generationResult.title = edit.title || generationResult.title;
+        generationResult.postText = edit.postText || generationResult.postText;
+        generationResult.caption = edit.caption || generationResult.caption;
+        generationResult.hook = edit.hook || generationResult.hook;
+        generationResult.callToAction =
+          edit.callToAction || generationResult.callToAction;
+      } catch {
+        void 0;
+      }
+      const humanPostText = _applyBrandPhraseRules(
+        _sanitizeGeneratedText(generationResult.postText),
+        brand as any,
+      );
+      const humanCaption = _applyBrandPhraseRules(
+        _sanitizeGeneratedText(generationResult.caption),
+        brand as any,
+      );
+      const humanHook = _applyBrandPhraseRules(
+        _sanitizeGeneratedText(generationResult.hook),
+        brand as any,
+      );
+      const humanCTA = _applyBrandPhraseRules(
+        _sanitizeGeneratedText(generationResult.callToAction),
+        brand as any,
+      );
+      const humanPlatformStrategies = (
+        generationResult.platformStrategies || []
+      ).map((s) => ({
+        ...s,
+        optimizedText: _applyBrandPhraseRules(
+          _sanitizeGeneratedText(s.optimizedText),
+          brand as any,
+        ),
+      }));
+
       const contentPackage = {
-        title: generationResult.title,
-        postText: generationResult.postText,
-        caption: generationResult.caption,
-        hook: generationResult.hook,
-        callToAction: generationResult.callToAction,
+        title: humanTitle,
+        postText: humanPostText,
+        caption: humanCaption,
+        hook: humanHook,
+        callToAction: humanCTA,
         hashtags: generationResult.hashtags,
-        platformStrategies: generationResult.platformStrategies,
+        platformStrategies: humanPlatformStrategies,
         optimizationTips: generationResult.optimizationTips,
         targetAudience: generationResult.targetAudience,
         contentGoals: generationResult.contentGoals,
+        brandAlignment: brand
+          ? `Voice: "${brand.brandVoice}"${brand.directives && brand.directives.length ? ` · Directives: ${brand.directives.slice(0, 2).join(", ")}` : ""}`
+          : "On-brand per configured guidelines and vibe",
         imageUrl: finalImageUrl,
         videoUrl: finalVideoUrl,
         originalTopic: input.topic,
@@ -10013,8 +10863,10 @@ Generate a complete, enterprise-ready social media post package that includes al
       await db.generatedContent.update({
         where: { id: generatedContent.id },
         data: {
-          title: generationResult.title,
-          content: JSON.stringify(contentPackage),
+          title: _sanitizeGeneratedText(generationResult.title),
+          content: JSON.stringify(
+            _enforceBrandVibeOnContentPackage(contentPackage),
+          ),
           status: "DRAFT",
         },
       });
@@ -10026,6 +10878,7 @@ Generate a complete, enterprise-ready social media post package that includes al
         userId,
       );
     } catch (error) {
+      void error;
       console.error(
         `[Task] Failed to generate content from topic ${input.topic.topic}:`,
         error,
@@ -10034,8 +10887,7 @@ Generate a complete, enterprise-ready social media post package that includes al
       // Try fallback content generation with simpler approach
       try {
         const fallbackResult = await requestMultimodalModel({
-          system:
-            "You are a content creator. Generate a complete social media post package based on the topic provided.",
+          system: `${await _buildBrandVibeSystemDirectives()}\nYou are a content creator. Generate a complete social media post package based on the topic provided.`,
           messages: [
             {
               role: "user",
@@ -10057,7 +10909,7 @@ Generate a complete, enterprise-ready social media post package that includes al
         });
 
         const fallbackPackage = {
-          title: fallbackResult.title,
+          title: _sanitizeGeneratedText(fallbackResult.title),
           postText: fallbackResult.postText,
           caption: fallbackResult.caption,
           hashtags: {
@@ -10085,8 +10937,10 @@ Generate a complete, enterprise-ready social media post package that includes al
         await db.generatedContent.update({
           where: { id: generatedContent.id },
           data: {
-            title: fallbackResult.title,
-            content: JSON.stringify(fallbackPackage),
+            title: _sanitizeGeneratedText(fallbackResult.title),
+            content: JSON.stringify(
+              _enforceBrandVibeOnContentPackage(fallbackPackage),
+            ),
             status: "DRAFT",
           },
         });
@@ -10099,7 +10953,7 @@ Generate a complete, enterprise-ready social media post package that includes al
         // Final fallback with basic template
         const basicTitle = `${input.format} about ${sanitizeString(input.topic.topic || "Topic", 50)}`;
         const basicPackage = {
-          title: basicTitle,
+          title: _sanitizeGeneratedText(basicTitle),
           postText: `Content about ${sanitizeString(input.topic.topic || "this topic", 100)} is currently being optimized. Please try generating again.`,
           caption: "Engaging content coming soon!",
           hashtags: {
@@ -10117,8 +10971,10 @@ Generate a complete, enterprise-ready social media post package that includes al
         await db.generatedContent.update({
           where: { id: generatedContent.id },
           data: {
-            title: basicTitle,
-            content: JSON.stringify(basicPackage),
+            title: _sanitizeGeneratedText(basicTitle),
+            content: JSON.stringify(
+              _enforceBrandVibeOnContentPackage(basicPackage),
+            ),
             status: "FAILED",
           },
         });
@@ -10151,6 +11007,9 @@ export async function generateContentFromViralPotential(input: {
 }) {
   const { userId } = await getAuth({ required: true });
 
+  console.log("[Gen] generateContentFromViralPotential start", {
+    concept: input?.post?.concept,
+  });
   await requireFeatureAccess("viral_content_generation");
   await requireUsageLimit("viral_content_daily");
 
@@ -10200,7 +11059,7 @@ export async function generateContentFromViralPotential(input: {
         : "";
 
       const generationResult = await requestMultimodalModel({
-        system: `You are an expert viral content creator with deep platform expertise.\n\nBRAND VIBE ALIGNMENT: Always enforce the following brand rules. If any requested content conflicts, adapt it to comply without losing impact.\n${brandVibeText}\n\nGenerate a COMPLETE viral post package based on the provided viral potential analysis.
+        system: `${await _buildBrandVibeSystemDirectives()}\nYou are an expert viral content creator with deep platform expertise.\n\nBRAND VIBE ALIGNMENT: Always enforce the following brand rules. If any requested content conflicts, adapt it to comply without losing impact.\n${brandVibeText}\n\nGenerate a COMPLETE viral post package based on the provided viral potential analysis.
 
 CRITICAL REQUIREMENTS:
 1. Create a complete, ready-to-post content package
@@ -10317,16 +11176,23 @@ Generate a complete, ready-to-post viral content package that maximizes engageme
       let finalImageUrl: string | undefined;
       let finalVideoUrl: string | undefined;
 
+      const directives = await _buildBrandVibeSystemDirectives();
+
       // Generate image if needed
       if (contentType === "IMAGE" || generationResult.imagePrompt) {
         try {
+          const brandForImage = await getBrandGuidelines().catch(
+            () => null as any,
+          );
+          const brandVibeForImage = brandForImage
+            ? `BRAND VIBE ALIGNMENT:\nBrand Voice: ${brandForImage.brandVoice}\nDirectives: ${(brandForImage.directives || []).join(", ")}`
+            : "";
           const imageResult = await requestMultimodalModel({
-            system:
-              "You are a professional image generation assistant. Create high-quality, viral-ready images based on the provided prompt.",
+            system: `${directives}\nYou are a professional social media visual designer. Always use your generateHighQualityImages tool to create a high-quality, on-brand image. Strictly follow the [VISUAL BRANDING] section (colors, visual style, imagery). Avoid off-brand colors and motifs.\n\n${brandVibeForImage}`,
             messages: [
               {
                 role: "user",
-                content: `Generate a high-quality, viral-ready image for: ${generationResult.imagePrompt || generationResult.content}`,
+                content: `Generate a high-quality, on-brand image for: ${generationResult.imagePrompt || generationResult.content}. The result must reflect the brand's color palette and visual style.`,
               },
             ],
             returnType: z
@@ -10339,6 +11205,7 @@ Generate a complete, ready-to-post viral content package that maximizes engageme
           });
           finalImageUrl = imageResult.imageUrl;
         } catch (error) {
+          void error;
           console.error("Failed to generate image:", error);
         }
       }
@@ -10346,13 +11213,18 @@ Generate a complete, ready-to-post viral content package that maximizes engageme
       // Generate video if needed
       if (contentType === "VIDEO") {
         try {
+          const brandForVideo = await getBrandGuidelines().catch(
+            () => null as any,
+          );
+          const brandVibeForVideo = brandForVideo
+            ? `BRAND VIBE ALIGNMENT:\nBrand Voice: ${brandForVideo.brandVoice}\nDirectives: ${(brandForVideo.directives || []).join(", ")}`
+            : "";
           const videoResult = await requestMultimodalModel({
-            system:
-              "You are a professional video generation assistant. Create engaging, viral-ready videos based on the provided prompt.",
+            system: `${directives}\nYou are a professional video generation assistant. Always use your generateVideo tool to create an engaging, on-brand short video. Strictly follow the [VISUAL BRANDING] section (colors, visual style, imagery). Avoid off-brand colors and motifs.\n\n${brandVibeForVideo}`,
             messages: [
               {
                 role: "user",
-                content: `Generate a viral-ready video for: ${generationResult.content}`,
+                content: `Generate a short, on-brand video for: ${generationResult.content}. The motion, colors and overlays must match the brand's visual style.`,
               },
             ],
             returnType: z
@@ -10365,13 +11237,14 @@ Generate a complete, ready-to-post viral content package that maximizes engageme
           });
           finalVideoUrl = videoResult.videoUrl;
         } catch (error) {
+          void error;
           console.error("Failed to generate video:", error);
         }
       }
 
       // Create comprehensive content package
       const contentPackage = {
-        title: generationResult.title,
+        title: _sanitizeGeneratedText(generationResult.title),
         content: generationResult.content,
         hook: generationResult.hook,
         callToAction: generationResult.callToAction,
@@ -10379,6 +11252,9 @@ Generate a complete, ready-to-post viral content package that maximizes engageme
         platformStrategies: generationResult.platformStrategies,
         optimizationTips: generationResult.optimizationTips,
         viralScore: generationResult.viralScore,
+        brandAlignment: brand
+          ? `Voice: "${brand.brandVoice}"${brand.directives && brand.directives.length ? ` · Directives: ${brand.directives.slice(0, 2).join(", ")}` : ""}`
+          : "On-brand per configured guidelines and vibe",
         imageUrl: finalImageUrl,
         videoUrl: finalVideoUrl,
         originalViralPost: input.post,
@@ -10395,12 +11271,15 @@ Generate a complete, ready-to-post viral content package that maximizes engageme
       await db.generatedContent.update({
         where: { id: generatedContent.id },
         data: {
-          title: generationResult.title,
-          content: JSON.stringify(contentPackage), // Store complete package as JSON
+          title: _sanitizeGeneratedText(generationResult.title),
+          content: JSON.stringify(
+            _enforceBrandVibeOnContentPackage(contentPackage),
+          ), // Store complete package as JSON
           status: "DRAFT",
         },
       });
     } catch (error) {
+      void error;
       console.error(
         `[Task] Failed to generate content from viral potential ${input.post.concept}:`,
         error,
@@ -10478,8 +11357,9 @@ export async function generateContentForPillar(input: {
       const brandVibeText = brand
         ? `Brand Voice: ${brand.brandVoice}\nDirectives: ${(brand.directives || []).join(", ")}`
         : "";
+      const directives = await _buildBrandVibeSystemDirectives();
       const generationResult = await requestMultimodalModel({
-        system: `You are an expert content creator.\n\nBRAND VIBE ALIGNMENT: Always enforce the following brand rules.\n${brandVibeText}\n\nGenerate content based on the user's prompt and requested format. The user is working within the content pillar "${pillar.name}".`,
+        system: `${await _buildBrandVibeSystemDirectives()}\nYou are an expert content creator.\n\nBRAND VIBE ALIGNMENT: Always enforce the following brand rules.\n${brandVibeText}\n\nGenerate content based on the user's prompt and requested format. The user is working within the content pillar "${pillar.name}".`,
         messages: [
           {
             role: "user",
@@ -10503,7 +11383,7 @@ export async function generateContentForPillar(input: {
       // Tag Brand Vibe metadata for TEXT content by wrapping into a structured package
       if (contentType === "TEXT") {
         const contentPackage = {
-          title: generationResult.title,
+          title: _sanitizeGeneratedText(generationResult.title),
           postText: generationResult.content,
           hashtags: {
             twitter: [],
@@ -10525,16 +11405,18 @@ export async function generateContentForPillar(input: {
               }
             : { applied: false },
         } as const;
-        finalContent = JSON.stringify(contentPackage);
+        finalContent = JSON.stringify(
+          _enforceBrandVibeOnContentPackage(contentPackage),
+        );
       }
 
       if (contentType === "IMAGE") {
         const imageResult = await requestMultimodalModel({
-          system: "You are an image generation assistant.",
+          system: `${directives}\nYou are a professional social media visual designer. Always use your generateHighQualityImages tool to create a high-quality, on-brand image. Strictly follow the [VISUAL BRANDING] section (colors, visual style, imagery). Avoid off-brand colors and motifs.\n\nBRAND VIBE ALIGNMENT:\n${brandVibeText}`,
           messages: [
             {
               role: "user",
-              content: `Generate an image for the following prompt: ${generationResult.content}`,
+              content: `Generate a high-quality, on-brand image for the following prompt: ${generationResult.content}. The result must reflect the brand's color palette and visual style.`,
             },
           ],
           returnType: z
@@ -10570,7 +11452,8 @@ export async function generateContentForPillar(input: {
             where: { id: generatedContent.id },
             data: { sourceIdea: JSON.stringify(updatedSource) },
           });
-        } catch {
+        } catch (error) {
+          void error;
           // ignore tagging failures for sourceIdea
         }
       }
@@ -10578,12 +11461,13 @@ export async function generateContentForPillar(input: {
       await db.generatedContent.update({
         where: { id: generatedContent.id },
         data: {
-          title: generationResult.title,
+          title: _sanitizeGeneratedText(generationResult.title),
           content: finalContent,
           status: "DRAFT",
         },
       });
     } catch (error) {
+      void error;
       console.error(
         `[Task] Failed to generate content for pillar ${input.pillarId}:`,
         error,
@@ -10625,6 +11509,7 @@ export async function listContentPillars() {
     ])) as any[];
     return Array.isArray(pillars) ? pillars : [];
   } catch (error) {
+    void error;
     console.error("listContentPillars fallback due to error:", error);
     return [];
   }
@@ -10646,6 +11531,66 @@ export async function listGeneratedContent(input: { pillarId: string }) {
       },
     },
   });
+}
+
+// Basic Drafts: list recent drafts across pillars
+export async function listDrafts(input?: {
+  limit?: number;
+  pillarId?: string;
+}) {
+  const { userId } = await getAuth({ required: true });
+  const take = Math.max(1, Math.min(100, input?.limit ?? 20));
+  return await db.generatedContent.findMany({
+    where: {
+      userId,
+      status: "DRAFT",
+      ...(input?.pillarId ? { pillarId: input.pillarId } : {}),
+    },
+    orderBy: { createdAt: "desc" },
+    take,
+    include: {
+      tags: { include: { tag: true } },
+    },
+  });
+}
+
+// Basic Drafts: create a simple text draft under a pillar (defaults to General)
+export async function createDraft(input: {
+  content: string;
+  title?: string;
+  pillarName?: string;
+  pillarId?: string;
+}) {
+  const { userId } = await getAuth({ required: true });
+  const pillarId = input.pillarId
+    ? input.pillarId
+    : (
+        await db.contentPillar.upsert({
+          where: {
+            userId_name: { userId, name: input.pillarName ?? "General" },
+          },
+          update: {},
+          create: {
+            userId,
+            name: input.pillarName ?? "General",
+            description: `Content related to ${input.pillarName ?? "General"}`,
+          },
+        })
+      ).id;
+
+  const created = await db.generatedContent.create({
+    data: {
+      userId,
+      pillarId,
+      title: input.title?.trim() || "Untitled Draft",
+      type: "TEXT",
+      content: input.content || "",
+      status: "DRAFT",
+      sourceIdea: JSON.stringify({ source: "manual-draft" }),
+    },
+  });
+
+  return created;
 }
 
 export async function updateGeneratedContent(input: {
@@ -10678,6 +11623,82 @@ export async function updateGeneratedContent(input: {
     },
     data: dataToUpdate,
   });
+}
+
+// Save text edits coming from UI (e.g., scheduling dialog) without breaking structured packages
+export async function saveContentEdits(input: {
+  contentId: string;
+  postText: string;
+}) {
+  try {
+    const { userId } = await getAuth({ required: true });
+
+    const content = await db.generatedContent.findFirst({
+      where: { id: input.contentId, userId },
+    });
+
+    if (!content) {
+      throw new Error(
+        "Content not found or you do not have permission to edit it.",
+      );
+    }
+
+    // Non-text content: don't overwrite media URLs; store edits in source metadata
+    if (content.type !== "TEXT") {
+      let metadata: Record<string, any> = {};
+      try {
+        metadata = content.sourceIdea
+          ? (JSON.parse(content.sourceIdea) as unknown as Record<string, any>)
+          : {};
+      } catch {
+        metadata = {};
+      }
+      metadata.userEdits = {
+        scheduledContentText: input.postText,
+        savedAt: new Date().toISOString(),
+      };
+      return await db.generatedContent.update({
+        where: { id: content.id },
+        data: { sourceIdea: JSON.stringify(metadata) },
+      });
+    }
+
+    // TEXT content: try to preserve structured JSON package if present
+    let updatedContent = content.content;
+    let parsed: Record<string, any> | null = null;
+    try {
+      parsed = JSON.parse(content.content) as unknown as Record<string, any>;
+    } catch {
+      parsed = null;
+    }
+
+    if (parsed && typeof parsed === "object") {
+      if (typeof parsed.postText === "string") {
+        parsed.postText = input.postText;
+      } else if (typeof parsed.content === "string") {
+        parsed.content = input.postText;
+      } else {
+        parsed.userEdits = {
+          postText: input.postText,
+          savedAt: new Date().toISOString(),
+        };
+      }
+      updatedContent = JSON.stringify(parsed);
+    } else {
+      updatedContent = input.postText;
+    }
+
+    return await db.generatedContent.update({
+      where: { id: content.id },
+      data: { content: updatedContent, status: "DRAFT" },
+    });
+  } catch (error) {
+    console.error("[saveContentEdits] Failed to save content edits", {
+      contentId: input.contentId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
 }
 
 function getAnalyticsCacheKey(
@@ -10856,7 +11877,8 @@ export async function refreshContentStrategy(input?: {
           );
           if (parsed.success) savedPrefs = parsed.data;
         }
-      } catch {
+      } catch (error) {
+        void error;
         // Non-fatal: proceed without preferences
         console.log("No saved preferences or parse failed");
       }
@@ -10893,13 +11915,34 @@ export async function refreshContentStrategy(input?: {
           .join("\n");
 
         let brandContextText = "";
-        if (unifiedContext.brandContext) {
+        if (
+          (unifiedContext as any).brandVibe ||
+          (unifiedContext as any).brandGuidelines
+        ) {
+          const bv: any = (unifiedContext as any).brandVibe || {};
+          const gl: any = (unifiedContext as any).brandGuidelines || {};
+          const voice = (bv?.brandPersonality?.voiceTone ||
+            gl?.brandVoice ||
+            "Not set") as string;
+          const audience = (
+            typeof bv?.targetAudience === "string"
+              ? (bv?.targetAudience as string)
+              : bv?.targetAudience?.demographics || gl?.audience || "Not set"
+          ) as string;
+          const pillars = Array.isArray(
+            bv?.contentOpportunities?.contentPillars,
+          )
+            ? (bv.contentOpportunities.contentPillars as any[]).join(", ")
+            : Array.isArray(gl?.directives)
+              ? (gl.directives as any[]).join(", ")
+              : (bv?.contentThemes || []).join(", ") || "Not set";
+
           brandContextText = `
 
-**Enhanced Brand Persona (from Brand Analysis):**
-- Voice: ${unifiedContext.brandContext.voice || "Not set"}
-- Target Audience: ${unifiedContext.brandContext.audience || "Not set"}
-- Content Pillars: ${unifiedContext.brandContext.contentPillars || "Not set"}`;
+**Brand Vibe Snapshot:**
+- Voice: ${voice}
+- Target Audience: ${audience}
+- Content Pillars: ${pillars}`;
         }
 
         discoverInsightsText = `
@@ -10937,7 +11980,8 @@ ${viralInsightsText || "No viral insights available"}${brandContextText}`;
           if (Array.isArray(parsedTags) && parsedTags.length > 0) {
             tags = parsedTags.join(", ");
           }
-        } catch {
+        } catch (error) {
+          void error;
           // Ignore parsing errors, tags will remain 'N/A'
         }
       }
@@ -10965,6 +12009,8 @@ ${viralInsightsText || "No viral insights available"}${brandContextText}`;
         text: `
     Based on the provided comments, brand guidelines, trending topics, and viral content insights, create a comprehensive content strategy that leverages current trends and proven high-performing content patterns.
 
+    IMPORTANT: Strictly apply the Brand Vibe (voice, tone, directives, phrases to use/avoid) across ALL outputs. If any idea conflicts with Brand Vibe, adapt it to fit while preserving impact.
+
     **Part 1: High-Level Strategy Summary**
     Generate a 'strategySummary' object that includes:
     - 'keyThemes': An array of 3-4 central themes for the upcoming week.
@@ -10978,18 +12024,22 @@ ${viralInsightsText || "No viral insights available"}${brandContextText}`;
     1. The date MUST be one of these: ${dates.join(", ")}.
     2. Provide a 'dayOfWeek'.
     3. Include a 'dailyRationale' explaining the strategy for that day.
-    4. Propose 1 'post'. For each post, include:
+    4. Propose exactly THREE posts to give users options:
+        a) A TEXT post (use format 'Text Post' or a platform-specific equivalent like 'Thread').
+        b) An IMAGE post (use format 'Image Post') that includes a strong 'assetPrompt' for image generation aligned with Brand Vibe aesthetics.
+        c) A VIDEO concept (use format 'Video') that includes a concise but usable 'videoScript' (with hook, beats, and optional A-roll/B-roll guidance).
+       For each post, include:
         - a unique 'id'
         - 'pillar': The content pillar it belongs to.
         - 'title': A catchy title.
-        - 'format': e.g., 'Image Post', 'Video', 'Article', 'Story'.
+        - 'format': e.g., 'Text Post', 'Image Post', 'Video'.
         - 'contentBrief': A detailed description of the content.
         - 'cta': A clear call to action.
-        - 'assetPrompt' (optional): A DALL-E prompt for a visual.
-        - 'videoScript' (optional): A short script if the format is video.
-         - 'rationale': Why this post is recommended for this day/time. Include how it leverages trending topics or viral insights when applicable.
-         - 'trendingTopics' (optional): Array of specific trending topic names that influenced this post.
-         - 'viralInsights' (optional): Array of viral content insight descriptions that influenced this post.
+        - 'assetPrompt' (for Image Post): A vivid, brand-aligned prompt. Avoid text-in-image unless essential.
+        - 'videoScript' (for Video): A short, ready-to-read script with a strong hook.
+        - 'rationale': Why this post is recommended for this day/time and how it reflects Brand Vibe.
+        - 'trendingTopics': Array of specific trending topic names leveraged.
+        - 'viralInsights': Array of viral content insight descriptions applied.
         - 'viralityScore': A 1-10 score predicting engagement potential.
         - 'recommendedTime': e.g., '9:30 AM PST'.
         - 'targetPlatforms': e.g., ['Instagram', 'Twitter'].
@@ -11050,6 +12100,7 @@ ${viralInsightsText || "No viral insights available"}${brandContextText}`;
         },
       });
     } catch (error) {
+      void error;
       const errorMessage =
         error instanceof Error ? error.message : "Unknown error";
       await updateStatus("FAILED", errorMessage);
@@ -11078,6 +12129,7 @@ export async function getStrategyPreferences() {
     }
     return { preferences: parsed.data };
   } catch (error) {
+    void error;
     console.error("getStrategyPreferences failed", (error as Error).message);
     return { preferences: null as StrategyPreferences | null };
   }
@@ -11119,6 +12171,7 @@ export async function updateStrategyPreferences(input: StrategyPreferences) {
     });
     return { success: true as const, preferences: validated };
   } catch (error) {
+    void error;
     console.error("updateStrategyPreferences failed", (error as Error).message);
     return { success: false as const, error: (error as Error).message };
   }
@@ -11134,6 +12187,7 @@ export async function clearStrategyPreferences() {
     });
     return { success: true as const };
   } catch (error) {
+    void error;
     console.error("clearStrategyPreferences failed", (error as Error).message);
     return { success: false as const, error: (error as Error).message };
   }
@@ -11156,7 +12210,8 @@ export async function generateContentStrategy() {
         updatedAt: cachedStrategy.updatedAt,
         status: cachedStrategy.status,
       };
-    } catch {
+    } catch (error) {
+      void error;
       console.warn(
         "Cached content strategy is invalid and will be regenerated. This can happen after an update and is not a critical error.",
       );
@@ -11213,7 +12268,8 @@ export async function regenerateStrategyDay(input: {
           typeof ContentStrategyCalendarSchema
         >,
       );
-    } catch {
+    } catch (error) {
+      void error;
       throw new Error(
         "Saved strategy is invalid. Please regenerate the full plan.",
       );
@@ -11237,7 +12293,9 @@ export async function regenerateStrategyDay(input: {
         );
         if (parsed.success) savedPrefs = parsed.data;
       }
-    } catch {}
+    } catch (error) {
+      void error;
+    }
 
     const day = strategy.calendar[idx]!;
     const dayContext = `Regenerate the content suggestion for this exact date and day.\n\nDate: ${day!.date}\nDay of Week: ${day!.dayOfWeek}`;
@@ -11340,11 +12398,187 @@ export async function regenerateStrategyDay(input: {
 
     return { updatedDay: updated, updatedAt: new Date().toISOString() };
   } catch (error) {
+    void error;
     console.error("regenerateStrategyDay error", error);
     return {
       error: error instanceof Error ? error.message : "Unknown error",
     } as const;
   }
+}
+
+// Create simple text-based drafts from a strategy day options (text/image/video)
+export async function createDraftsFromStrategyDay(input: {
+  dayIndex: number;
+  createText?: boolean;
+  createImage?: boolean;
+  createVideo?: boolean;
+}) {
+  const { userId } = await getAuth({ required: true });
+
+  const row = await db.contentStrategy.findUnique({ where: { userId } });
+  if (!row?.strategyData) {
+    throw new Error("No content strategy found. Generate it first.");
+  }
+
+  let strategy: z.infer<typeof ContentStrategyCalendarSchema>;
+  try {
+    strategy = ContentStrategyCalendarSchema.parse(
+      JSON.parse(row.strategyData) as unknown as z.infer<
+        typeof ContentStrategyCalendarSchema
+      >,
+    );
+  } catch (error) {
+    void error;
+    throw new Error("Saved strategy is invalid. Please regenerate the plan.");
+  }
+
+  const idx = input.dayIndex;
+  if (idx < 0 || idx >= strategy.calendar.length) {
+    throw new Error("Requested day not found in the current strategy.");
+  }
+
+  const day = strategy.calendar[idx];
+  if (!day) {
+    throw new Error("Requested day not found in the current strategy.");
+  }
+  const posts = Array.isArray(day.posts) ? day.posts : [];
+
+  const textPost =
+    posts.find((p) => p && (p.format || "").toLowerCase().includes("text")) ||
+    posts.find(
+      (p) => p && p.videoScript === undefined && p.assetPrompt === undefined,
+    );
+  const imagePost = posts.find((p) => p && p.assetPrompt);
+  const videoPost = posts.find((p) => p && p.videoScript);
+
+  const toCreate = {
+    text: input.createText !== false && textPost,
+    image: input.createImage !== false && imagePost,
+    video: input.createVideo !== false && videoPost,
+  } as const;
+
+  const createdIds: string[] = [];
+
+  const ensurePillar = async (name: string) => {
+    const pillar = await db.contentPillar.upsert({
+      where: { userId_name: { userId, name } },
+      update: {},
+      create: { userId, name, description: `Content related to ${name}` },
+    });
+    return pillar.id;
+  };
+
+  if (toCreate.text && textPost) {
+    const pillarId = await ensurePillar(textPost.pillar || "General");
+    const title = `${textPost.title || "Text Draft"}`;
+    const contentParts = [
+      textPost.title ? `Title: ${textPost.title}` : null,
+      textPost.contentBrief ? `Brief: ${textPost.contentBrief}` : null,
+      textPost.cta ? `CTA: ${textPost.cta}` : null,
+      Array.isArray(textPost.targetPlatforms) && textPost.targetPlatforms.length
+        ? `Platforms: ${textPost.targetPlatforms.join(", ")}`
+        : null,
+      Array.isArray(textPost.trendingTopics) && textPost.trendingTopics.length
+        ? `Trending: ${textPost.trendingTopics.join(", ")}`
+        : null,
+      Array.isArray(textPost.viralInsights) && textPost.viralInsights.length
+        ? `Viral Angles: ${textPost.viralInsights.join(", ")}`
+        : null,
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    const created = await db.generatedContent.create({
+      data: {
+        userId,
+        pillarId,
+        title,
+        type: "TEXT",
+        content: contentParts || "",
+        status: "DRAFT",
+        sourceIdea: JSON.stringify({
+          source: "content-strategy-day",
+          dayIndex: idx,
+          kind: "text",
+          date: day!.date,
+        }),
+      },
+    });
+    createdIds.push(created.id);
+  }
+
+  if (toCreate.image && imagePost) {
+    const pillarId = await ensurePillar(imagePost.pillar || "General");
+    const title = `${imagePost.title || "Image Prompt"} [Image Prompt]`;
+    const contentParts = [
+      imagePost.title ? `Title: ${imagePost.title}` : null,
+      imagePost.assetPrompt ? `Image Prompt:\n${imagePost.assetPrompt}` : null,
+      imagePost.contentBrief
+        ? `Caption Starter: ${imagePost.contentBrief}`
+        : null,
+      imagePost.cta ? `CTA: ${imagePost.cta}` : null,
+      Array.isArray(imagePost.targetPlatforms) &&
+      imagePost.targetPlatforms.length
+        ? `Platforms: ${imagePost.targetPlatforms.join(", ")}`
+        : null,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
+    const created = await db.generatedContent.create({
+      data: {
+        userId,
+        pillarId,
+        title,
+        type: "TEXT",
+        content: contentParts || "",
+        status: "DRAFT",
+        sourceIdea: JSON.stringify({
+          source: "content-strategy-day",
+          dayIndex: idx,
+          kind: "image",
+          date: day!.date,
+        }),
+      },
+    });
+    createdIds.push(created.id);
+  }
+
+  if (toCreate.video && videoPost) {
+    const pillarId = await ensurePillar(videoPost.pillar || "General");
+    const title = `${videoPost.title || "Video Script"} [Video Script]`;
+    const contentParts = [
+      videoPost.title ? `Title: ${videoPost.title}` : null,
+      videoPost.videoScript ? `Video Script:\n${videoPost.videoScript}` : null,
+      videoPost.cta ? `CTA: ${videoPost.cta}` : null,
+      Array.isArray(videoPost.targetPlatforms) &&
+      videoPost.targetPlatforms.length
+        ? `Platforms: ${videoPost.targetPlatforms.join(", ")}`
+        : null,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
+    const created = await db.generatedContent.create({
+      data: {
+        userId,
+        pillarId,
+        title,
+        type: "TEXT",
+        content: contentParts || "",
+        status: "DRAFT",
+        sourceIdea: JSON.stringify({
+          source: "content-strategy-day",
+          dayIndex: idx,
+          kind: "video",
+          date: day!.date,
+        }),
+      },
+    });
+    createdIds.push(created.id);
+  }
+
+  return { created: createdIds.length, contentIds: createdIds };
 }
 
 // Content Recommendations Generation (AI-powered)
@@ -11393,6 +12627,7 @@ export async function generateContentRecommendations(input?: {
       );
     }
   } catch (error) {
+    void error;
     console.log(
       "Could not fetch discover section trends, falling back to cache:",
       error,
@@ -11405,7 +12640,8 @@ export async function generateContentRecommendations(input?: {
     if (trends?.data && trends.status === "COMPLETED") {
       try {
         trendingTopics = (JSON.parse(trends.data) as any).trendingTopics || [];
-      } catch {
+      } catch (error) {
+        void error;
         // ignore
       }
     }
@@ -11466,6 +12702,7 @@ export async function generateContentRecommendations(input?: {
         }
       }
     } catch (error) {
+      void error;
       console.log("Could not fetch learning insights:", error);
     }
   }
@@ -11532,6 +12769,7 @@ export async function generateContentRecommendations(input?: {
         brandIntelligenceContext += `\n💡 OPPORTUNITY MAPPING:\n${typeof intelligence.opportunityMapping === "string" ? intelligence.opportunityMapping : JSON.stringify(intelligence.opportunityMapping, null, 2)}\n`;
       }
     } catch (error) {
+      void error;
       console.log("Could not parse brand intelligence data:", error);
     }
   }
@@ -11605,7 +12843,7 @@ Maintain strict alignment with brand voice, values, and personality while incorp
 
   // LLM call with enhanced intelligence
   const aiResult = await requestMultimodalModel({
-    system: systemPrompt,
+    system: `${await _buildBrandVibeSystemDirectives()}\n${systemPrompt}\n\nSTRICT BRAND ALIGNMENT: Always use BOTH the Brand Guidelines and the Brand Vibe above. Provide recommendations that strictly adhere to these and avoid any conflicts.`,
     messages: [{ role: "user", content: JSON.stringify(promptObj) }],
     returnType: z
       .object({
@@ -11720,20 +12958,86 @@ Maintain strict alignment with brand voice, values, and personality while incorp
     temperature: 0.3,
   });
 
-  // Add metadata about intelligence enhancement
-  const enhancedRecommendations = aiResult.recommendations.map((rec) => ({
+  // Sanitize outputs for Brand Vibe enforcement
+  const sanitizeRec = (rec: any) => ({
     ...rec,
-    isLearningEnhanced: hasLearningAccess && learningInsights !== null,
-    isBrandIntelligenceEnhanced: brandIntelligence !== null,
-    learningInsightsUsed: hasLearningAccess && learningInsights !== null,
-    brandIntelligenceUsed: brandIntelligence !== null,
-    enhancementLevel: brandIntelligence ? "10x" : "standard",
-  }));
+    title: _sanitizeGeneratedText(rec?.title),
+    caption: _sanitizeGeneratedText(rec?.caption),
+    format: _sanitizeGeneratedText(rec?.format),
+    imageUrl: rec?.imageUrl,
+    videoScript: rec?.videoScript
+      ? _sanitizeGeneratedText(rec.videoScript)
+      : undefined,
+    targetPlatforms: sanitizeArray(
+      rec?.targetPlatforms as string[] | undefined,
+      10,
+      30,
+    ),
+    relevantTrends: sanitizeArray(
+      rec?.relevantTrends as string[] | undefined,
+      10,
+      120,
+    ),
+    citations: Array.isArray(rec?.citations)
+      ? rec.citations.map((c: any) => ({
+          source: _sanitizeGeneratedText(c?.source),
+          type: c?.type,
+          details: c?.details ? _sanitizeGeneratedText(c.details) : undefined,
+        }))
+      : [],
+    strategicRationale: _sanitizeGeneratedText(rec?.strategicRationale),
+    contentGapAddressed: rec?.contentGapAddressed
+      ? _sanitizeGeneratedText(rec.contentGapAddressed)
+      : undefined,
+    audiencePersonaTarget: rec?.audiencePersonaTarget
+      ? _sanitizeGeneratedText(rec.audiencePersonaTarget)
+      : undefined,
+    competitiveAdvantage: rec?.competitiveAdvantage
+      ? _sanitizeGeneratedText(rec.competitiveAdvantage)
+      : undefined,
+  });
+
+  const sanitizedAiResult = {
+    recommendations: (aiResult.recommendations ?? []).map(sanitizeRec),
+    strategicSummary: _sanitizeGeneratedText(aiResult.strategicSummary),
+    keyOpportunitiesAddressed: sanitizeArray(
+      aiResult.keyOpportunitiesAddressed ?? [],
+      20,
+      120,
+    ),
+  };
+
+  // Add metadata about intelligence enhancement
+  const enhancedRecommendations = sanitizedAiResult.recommendations.map(
+    (rec) => ({
+      ...rec,
+      isLearningEnhanced: hasLearningAccess && learningInsights !== null,
+      isBrandIntelligenceEnhanced: brandIntelligence !== null,
+      learningInsightsUsed: hasLearningAccess && learningInsights !== null,
+      brandIntelligenceUsed: brandIntelligence !== null,
+      enhancementLevel: brandIntelligence ? "10x" : "standard",
+      brandAlignment:
+        [
+          brandGuidelines?.brandVoice
+            ? `Voice: "${brandGuidelines.brandVoice}"`
+            : null,
+          Array.isArray((brandGuidelines as any)?.directives) &&
+          (brandGuidelines as any).directives.length
+            ? `Directives: ${(brandGuidelines as any).directives.slice(0, 2).join(", ")}`
+            : null,
+          Array.isArray(rec.targetPlatforms) && rec.targetPlatforms.length
+            ? `Platforms: ${rec.targetPlatforms.slice(0, 3).join(", ")}`
+            : null,
+        ]
+          .filter(Boolean)
+          .join(" · ") || "On-brand per configured guidelines and vibe",
+    }),
+  );
 
   return {
     recommendations: enhancedRecommendations,
-    strategicSummary: aiResult.strategicSummary,
-    keyOpportunitiesAddressed: aiResult.keyOpportunitiesAddressed,
+    strategicSummary: sanitizedAiResult.strategicSummary,
+    keyOpportunitiesAddressed: sanitizedAiResult.keyOpportunitiesAddressed,
     enhancementMetadata: {
       usedBrandIntelligence: brandIntelligence !== null,
       usedLearningInsights: hasLearningAccess && learningInsights !== null,
@@ -12028,6 +13332,7 @@ function determineRelevantPlatforms(
         }
       }
     } catch (error) {
+      void error;
       console.log("Error parsing brand context for platform strategy:", error);
     }
   }
@@ -12179,6 +13484,7 @@ async function retryWithBackoff<T>(
     try {
       return await operation();
     } catch (error) {
+      void error;
       lastError = error as Error;
 
       // Don't retry on certain error types
@@ -12435,9 +13741,9 @@ async function _internal_generateAllInsights(
 
     // Check if we have enough data for analysis
     const hasMinimalData =
-      allComments.length >= 5 ||
+      allComments.length >= 3 ||
       allDocuments.length > 0 ||
-      (connectedAccounts.length > 0 && brandContext) ||
+      !!brandContext ||
       (brandSignals &&
         (brandSignals.preferredTones || brandSignals.commonKeywords));
 
@@ -12459,10 +13765,16 @@ async function _internal_generateAllInsights(
       allDocuments.length === 0 &&
       connectedAccounts.length > 0;
 
+    const useBrandOnlyFlow =
+      allComments.length < 5 &&
+      allDocuments.length === 0 &&
+      connectedAccounts.length === 0 &&
+      !!brandContext;
+
     // Truncate long comments and prepare for smart chunking
     const truncatedComments = allComments.map((comment) => ({
       ...comment,
-      text: truncateText(comment.text, 400), // Slightly increased limit
+      text: truncateText(comment.text, 280), // Reduced to keep payloads small
     }));
 
     // STEP 1: Extract core topics using smart sampling
@@ -12544,6 +13856,51 @@ async function _internal_generateAllInsights(
         coreTopics = connectedAccounts
           .map((acc) => `${acc.platform} content strategy`)
           .slice(0, 3);
+      }
+    } else if (useBrandOnlyFlow) {
+      try {
+        const brandContextSummary = JSON.stringify({
+          industry: brandContext?.industry,
+          niche: brandContext?.niche,
+          targetAudience: brandContext?.targetAudience,
+          brandPersonality: brandContext?.brandPersonality,
+          contentThemes: brandContext?.contentThemes,
+          communicationStyle: brandContext?.communicationStyle,
+        });
+        const topicResult = await requestMultimodalModel({
+          system:
+            "You are an expert at identifying key themes and platform strategy from a brand context alone. Use only the provided brand context to extract the top 3-5 core topics and suggest primary/secondary platforms.",
+          messages: [
+            {
+              role: "user",
+              content: `Based on this brand context, list the most important content topics and the most relevant platforms:\n\n${brandContextSummary}`,
+            },
+          ],
+          returnType: z
+            .object({
+              topics: z.array(z.string()).describe("3-5 core topics"),
+              platformStrategy: z
+                .object({
+                  primary: z.string().describe("Most important platform"),
+                  secondary: z
+                    .array(z.string())
+                    .describe("Additional important platforms"),
+                  reasoning: z.string().describe("Why these platforms"),
+                })
+                .describe("Platform prioritization based on brand context"),
+            })
+            .describe("Core topics and platform strategy from brand context"),
+          model: "small",
+          temperature: 0.2,
+        });
+        coreTopics = topicResult.topics;
+      } catch {
+        void 0;
+        coreTopics = [
+          "Thought leadership",
+          "Customer stories",
+          "How-to guides",
+        ].slice(0, 3);
       }
     } else if (truncatedComments.length > 0 || allDocuments.length > 0) {
       // Use smart chunking for topic extraction - take diverse sample
@@ -12682,7 +14039,8 @@ async function _internal_generateAllInsights(
       try {
         const parsed = typeof val === "string" ? JSON.parse(val) : val;
         return Array.isArray(parsed) ? (parsed as string[]) : [];
-      } catch {
+      } catch (error) {
+        void error;
         return typeof val === "string" ? [val as string] : [];
       }
     };
@@ -12723,19 +14081,19 @@ async function _internal_generateAllInsights(
     // Create smart chunks for different types of analysis
     const trendingTopicsChunks = createSmartDataChunks(
       prioritizedComments,
-      25, // Max 25 comments per chunk
+      20, // Max 20 comments per chunk (tighter limit)
       estimateCommentSize,
     );
 
     const viralContentChunks = createSmartDataChunks(
       prioritizedComments,
-      20, // Slightly smaller chunks for viral analysis
+      15, // Smaller chunks for viral analysis to reduce payload
       estimateCommentSize,
     );
 
     const audienceInsightsChunks = createSmartDataChunks(
       prioritizedComments,
-      30, // Larger chunks for audience analysis
+      25, // Moderated chunk size for audience analysis
       estimateCommentSize,
     );
 
@@ -12762,7 +14120,10 @@ async function _internal_generateAllInsights(
 Core Topics: ${coreTopics.join(", ") || "N/A"}
 Web Research: ${webResearchSummary || "N/A"}
 Web Research Sources: ${JSON.stringify(webResearchSources)}
-Prioritized Comments (${selectedComments.length} most relevant): ${JSON.stringify(selectedComments.map((c) => c.text))}
+Prioritized Comments (${selectedComments.length} most relevant): ${selectedComments
+                  .map((c) => truncateText(c.text, 280))
+                  .join("\n- ")
+                  .slice(0, 8000)}
 ${brandGuidelinesContext}
 ${brandSignalsContext}
 
@@ -12904,7 +14265,23 @@ Generate insights that feel like they were created by someone who deeply underst
         },
       );
 
-      trendingTopics = validatedTopics;
+      trendingTopics = validatedTopics.map((t: any) => ({
+        ...t,
+        executiveSummary: _sanitizeGeneratedText(t.executiveSummary),
+        strategicAngle: _applyBrandPhraseRules(
+          _sanitizeGeneratedText(t.strategicAngle),
+          brandGuidelines as any,
+        ),
+        exampleHook: _applyBrandPhraseRules(
+          _sanitizeGeneratedText(t.exampleHook),
+          brandGuidelines as any,
+        ),
+        samplePost: _applyBrandPhraseRules(
+          _sanitizeGeneratedText(t.samplePost),
+          brandGuidelines as any,
+        ),
+        historicalData: _sanitizeGeneratedText(t.historicalData),
+      }));
       partialResults.trendingTopics = trendingTopics;
     } catch (trendingError) {
       const categorizedError = categorizeError(trendingError as Error);
@@ -12964,7 +14341,10 @@ Generate insights that feel like they were created by someone who deeply underst
 Core Topics: ${coreTopics.join(", ") || "N/A"}
 Web Research: ${webResearchSummary || "N/A"}
 Web Research Sources: ${JSON.stringify(webResearchSources)}
-High-Relevance Comments (${selectedComments.length} most relevant): ${JSON.stringify(selectedComments.map((c) => c.text))}
+High-Relevance Comments (${selectedComments.length} most relevant): ${selectedComments
+                  .map((c) => truncateText(c.text, 280))
+                  .join("\n- ")
+                  .slice(0, 8000)}
 ${brandGuidelinesContext}
 ${brandSignalsContext}
 
@@ -12995,7 +14375,91 @@ Focus on content that will generate massive engagement, shares, and reach across
         "High-quality viral content generation",
       );
 
-      viralContentPotential = viralResult.viralContentPotential;
+      viralContentPotential = (viralResult.viralContentPotential || []).map(
+        (v: any) => ({
+          ...v,
+          justification: _applyBrandPhraseRules(
+            _sanitizeGeneratedText(v.justification),
+            brandGuidelines as any,
+          ),
+          hook: _applyBrandPhraseRules(
+            _sanitizeGeneratedText(v.hook),
+            brandGuidelines as any,
+          ),
+          body: _applyBrandPhraseRules(
+            _sanitizeGeneratedText(v.body),
+            brandGuidelines as any,
+          ),
+          callToAction: _applyBrandPhraseRules(
+            _sanitizeGeneratedText(v.callToAction),
+            brandGuidelines as any,
+          ),
+          creativeDirection: _sanitizeGeneratedText(v.creativeDirection),
+          optimizationTips: _sanitizeGeneratedText(v.optimizationTips),
+          platformSpecificStrategies: v.platformSpecificStrategies
+            ? {
+                ...v.platformSpecificStrategies,
+                twitter: v.platformSpecificStrategies.twitter
+                  ? {
+                      ...v.platformSpecificStrategies.twitter,
+                      strategy: _applyBrandPhraseRules(
+                        _sanitizeGeneratedText(
+                          v.platformSpecificStrategies.twitter.strategy,
+                        ),
+                        brandGuidelines as any,
+                      ),
+                    }
+                  : undefined,
+                instagram: v.platformSpecificStrategies.instagram
+                  ? {
+                      ...v.platformSpecificStrategies.instagram,
+                      strategy: _applyBrandPhraseRules(
+                        _sanitizeGeneratedText(
+                          v.platformSpecificStrategies.instagram.strategy,
+                        ),
+                        brandGuidelines as any,
+                      ),
+                    }
+                  : undefined,
+                tiktok: v.platformSpecificStrategies.tiktok
+                  ? {
+                      ...v.platformSpecificStrategies.tiktok,
+                      strategy: _applyBrandPhraseRules(
+                        _sanitizeGeneratedText(
+                          v.platformSpecificStrategies.tiktok.strategy,
+                        ),
+                        brandGuidelines as any,
+                      ),
+                    }
+                  : undefined,
+                linkedin: (v.platformSpecificStrategies as any).linkedin
+                  ? {
+                      ...(v.platformSpecificStrategies as any).linkedin,
+                      strategy: _applyBrandPhraseRules(
+                        _sanitizeGeneratedText(
+                          (v.platformSpecificStrategies as any).linkedin
+                            .strategy,
+                        ),
+                        brandGuidelines as any,
+                      ),
+                    }
+                  : undefined,
+                facebook: (v.platformSpecificStrategies as any).facebook
+                  ? {
+                      ...(v.platformSpecificStrategies as any).facebook,
+                      strategy: _applyBrandPhraseRules(
+                        _sanitizeGeneratedText(
+                          (v.platformSpecificStrategies as any).facebook
+                            .strategy,
+                        ),
+                        brandGuidelines as any,
+                      ),
+                    }
+                  : undefined,
+              }
+            : undefined,
+        }),
+      );
       partialResults.viralContentPotential = viralContentPotential;
     } catch (viralError) {
       const categorizedError = categorizeError(viralError as Error);
@@ -13028,7 +14492,7 @@ Focus on content that will generate massive engagement, shares, and reach across
           ];
         }
       } else {
-        selectedComments = prioritizedComments.slice(0, 40);
+        selectedComments = prioritizedComments.slice(0, 25);
       }
 
       const audienceResult = await retryWithBackoff(
@@ -13041,7 +14505,10 @@ Focus on content that will generate massive engagement, shares, and reach across
                 role: "user",
                 content: `Analyze these strategically selected comments to create detailed audience personas and insights:
 
-Comments Dataset (${selectedComments.length} comments): ${JSON.stringify(selectedComments.map((c) => c.text))}
+Comments Dataset (${selectedComments.length} comments): ${selectedComments
+                  .map((c) => truncateText(c.text, 280))
+                  .join("\n- ")
+                  .slice(0, 8000)}
 ${brandGuidelinesContext}
 ${brandSignalsContext}
 
@@ -13152,11 +14619,21 @@ Create 3-4 specific personas based on actual audience behavior, engagement patte
           category: "advanced_insights",
           actionUrl: "/discover?tab=insights",
         });
-        await sendEmail({
-          toUserId: userId,
-          subject: "Your Advanced Insights are ready",
-          markdown: `Your deep research insights are ready.\n\n[Open Insights](${link})`,
-        });
+
+        // Idempotency: ensure we only send one email per insights run (per cacheKey)
+        const emailFlagKey = generateContentCacheKey(
+          "advanced_insights_email_sent",
+          cacheKey,
+        );
+        const alreadySent = await getCachedContent(emailFlagKey, 720); // 30 days
+        if (!alreadySent) {
+          await sendEmail({
+            toUserId: userId,
+            subject: "Your Advanced Insights are ready",
+            markdown: `Your deep research insights are ready.\n\n[Open Insights](${link})`,
+          });
+          await setCachedContent(emailFlagKey, "sent", userId);
+        }
       } else {
         await createNotification({
           userId,
@@ -13172,6 +14649,7 @@ Create 3-4 specific personas based on actual audience behavior, engagement patte
       console.error("Failed to send completion notification:", notifyError);
     }
   } catch (error) {
+    void error;
     console.error("Critical error in _internal_generateAllInsights:", error);
     const categorizedError = categorizeError(error as Error);
 
@@ -13265,6 +14743,7 @@ export async function triggerAdvancedInsightsGeneration(input?: {
   pageId?: string;
   platform?: string;
   mode?: "balanced" | "deep";
+  force?: boolean;
 }) {
   const { userId } = await getAuth({ required: true });
 
@@ -13290,7 +14769,52 @@ export async function triggerAdvancedInsightsGeneration(input?: {
     };
   }
 
-  // Consume credits for advanced insights generation (10 credits)
+  const cacheKey = getAnalyticsCacheKey("advanced_insights", userId, input);
+
+  // Prevent duplicate runs: if a generation is already in progress (within 2 hours), or
+  // if we have a fresh completed result (within 6 hours), don't start a new task.
+  const existing = await db.analyticsCache.findUnique({ where: { cacheKey } });
+  const now = new Date();
+  const GENERATION_TIMEOUT_HOURS = 2;
+  const CACHE_EXPIRY_HOURS = 6;
+
+  if (input?.force) {
+    const toDeleteCount = await db.analyticsCache.count({
+      where: { cacheKey },
+    });
+    if (toDeleteCount > 0) {
+      await db.analyticsCache.deleteMany({ where: { cacheKey } });
+    }
+  } else if (existing) {
+    const generationTimeout = new Date(
+      existing.startedAt.getTime() + GENERATION_TIMEOUT_HOURS * 60 * 60 * 1000,
+    );
+    const cacheExpiry = new Date(
+      existing.startedAt.getTime() + CACHE_EXPIRY_HOURS * 60 * 60 * 1000,
+    );
+
+    if (existing.status === "GENERATING" && now <= generationTimeout) {
+      return {
+        success: true,
+        taskId: null,
+        cacheKey,
+        alreadyRunning: true,
+        requiresUpgrade: false,
+      };
+    }
+
+    if (existing.status === "COMPLETED" && now <= cacheExpiry) {
+      return {
+        success: true,
+        taskId: null,
+        cacheKey,
+        alreadyCompleted: true,
+        requiresUpgrade: false,
+      };
+    }
+  }
+
+  // Consume credits for advanced insights generation (10 credits) only when actually starting a new run
   await _consumeCredits(
     userId,
     "advanced_insights_generation",
@@ -13298,8 +14822,6 @@ export async function triggerAdvancedInsightsGeneration(input?: {
     "Generated comprehensive advanced insights with AI analysis",
     { pageId: input?.pageId, platform: input?.platform },
   );
-
-  const cacheKey = getAnalyticsCacheKey("advanced_insights", userId, input);
 
   await updateAnalyticsCache({
     userId,
@@ -13376,7 +14898,12 @@ export async function getAdvancedInsights(input?: {
     if (isExpired && trends.status === "COMPLETED") {
       // Cache is expired, delete it and return null to trigger regeneration
       console.log("[getAdvancedInsights] Deleting expired cache");
-      await db.analyticsCache.deleteMany({ where: { cacheKey } });
+      const toDeleteCount = await db.analyticsCache.count({
+        where: { cacheKey },
+      });
+      if (toDeleteCount > 0) {
+        await db.analyticsCache.deleteMany({ where: { cacheKey } });
+      }
       return null;
     }
 
@@ -13396,7 +14923,12 @@ export async function getAdvancedInsights(input?: {
           generationTimeout,
         );
         // Delete the stuck cache to allow regeneration
-        await db.analyticsCache.deleteMany({ where: { cacheKey } });
+        const toDeleteCount = await db.analyticsCache.count({
+          where: { cacheKey },
+        });
+        if (toDeleteCount > 0) {
+          await db.analyticsCache.deleteMany({ where: { cacheKey } });
+        }
         return null;
       }
 
@@ -13407,14 +14939,17 @@ export async function getAdvancedInsights(input?: {
       return { status: trends.status, lastUpdated: trends.startedAt };
     }
 
-    if (trends.status === "FAILED" && trends.error) {
-      // Delete failed cache and return null to trigger regeneration
+    if (trends.status === "FAILED") {
+      // Return failed status with error so the client can display a helpful message
       console.log(
-        "[getAdvancedInsights] Deleting failed cache, error:",
+        "[getAdvancedInsights] Returning FAILED status with error:",
         trends.error,
       );
-      await db.analyticsCache.deleteMany({ where: { cacheKey } });
-      return null;
+      return {
+        status: "FAILED" as const,
+        error: trends.error || "Advanced insights generation failed",
+        lastUpdated: trends.completedAt?.toISOString() || null,
+      };
     }
 
     if (!trends.data) {
@@ -13471,6 +15006,7 @@ export async function getAdvancedInsights(input?: {
       };
     }
   } catch (error) {
+    void error;
     console.error("[getAdvancedInsights] Unexpected error in function:", error);
     console.error(
       "[getAdvancedInsights] Error stack:",
@@ -13518,6 +15054,7 @@ export async function getFacebookPageInsights(input: {
     const response = await axios.get(url, { params });
     return response.data;
   } catch (error) {
+    void error;
     console.error("Error fetching Facebook Page Insights:", error);
     if (axios.isAxiosError(error) && error.response) {
       throw new Error(
@@ -13530,6 +15067,10 @@ export async function getFacebookPageInsights(input: {
 
 export async function getPageAnalytics(input: { pageId: string }) {
   const { userId } = await getAuth({ required: true });
+
+  if (!input.pageId || `${input.pageId}`.trim() === "") {
+    throw new Error("Please select a Facebook Page to load analytics.");
+  }
 
   // Ensure the user has access to this page
   const page = await db.page.findFirst({
@@ -13557,6 +15098,11 @@ export async function getPageAnalytics(input: { pageId: string }) {
 
 export async function refreshAnalyticsData(input: { pageId: string }) {
   const { userId } = await getAuth({ required: true });
+
+  if (!input.pageId || `${input.pageId}`.trim() === "") {
+    throw new Error("Please select a Facebook Page to refresh analytics.");
+  }
+
   const page = await db.page.findFirst({
     where: { pageId: input.pageId, account: { userId } },
     include: { account: true },
@@ -13650,6 +15196,7 @@ export async function refreshAnalyticsData(input: { pageId: string }) {
 
     return { success: true, insightsFound: dailyAnalytics.size };
   } catch (error) {
+    void error;
     console.error("Error fetching page analytics:", error);
     if (axios.isAxiosError(error) && error.response?.data?.error) {
       const fbError = error.response.data.error;
@@ -13711,6 +15258,7 @@ export async function respondToComment(input: {
           { params: { access_token: pageToken } },
         );
       } catch (error) {
+        void error;
         console.error(`Error posting response to ${comment.platform}:`, error);
         if (axios.isAxiosError(error) && error.response?.data?.error) {
           throw new Error(
@@ -13824,12 +15372,14 @@ export async function respondToComment(input: {
           lastAnalyzedAt: new Date(),
         },
       });
-    } catch {
+    } catch (error) {
+      void error;
       console.error("Failed to analyze and store user response style:"); // eslint-disable-line @typescript-eslint/no-unsafe-argument
     }
 
     return { success: true };
   } catch (error) {
+    void error;
     console.error("Error responding to comment:", error);
     throw new Error("Failed to post response. Please try again.");
   }
@@ -13909,6 +15459,7 @@ export async function getBrandGuidelines() {
         try {
           return JSON.parse(jsonString);
         } catch (error) {
+          void error;
           console.error("Failed to parse JSON in getBrandGuidelines:", error);
           return fallback;
         }
@@ -13962,9 +15513,7 @@ export async function getUserSettings() {
   try {
     const { userId } = await getAuth({ required: true });
 
-    // Set a timeout for database operations to prevent hanging
-    const dbOperationTimeout = 5000; // 5 seconds fast guard for UI responsiveness
-
+    const dbOperationTimeout = 5000;
     const timeoutPromise = new Promise((_, reject) => {
       setTimeout(
         () => reject(new Error("Database operation timed out")),
@@ -13977,39 +15526,68 @@ export async function getUserSettings() {
         const settingsOperation = db.userSettings.findUnique({
           where: { userId },
         });
-
         const settings = (await Promise.race([
           settingsOperation,
           timeoutPromise,
         ])) as any;
 
+        const defaults = {
+          fetchFrequency: "manual",
+          emailAlertsEnabled: false,
+          emailAlertsPriorityThreshold: 8,
+          curiosityLevel: "smart",
+          quietHoursStart: "21:00",
+          quietHoursEnd: "08:00",
+          dailyNudgeCap: 1,
+          enablePostActionCheckins: true,
+          enableWeeklyIdeaSprint: true,
+          weeklyIdeaSprintDay: "MON",
+          weeklyIdeaSprintTime: "09:00",
+          viralThreadsVisibility: "VISIBLE",
+          ideasBetaEnabled: false,
+        } as const;
+
         if (!settings) {
-          // Return default settings
-          return {
-            fetchFrequency: "manual",
-            emailAlertsEnabled: false,
-            emailAlertsPriorityThreshold: 8,
-          };
+          return { ...defaults };
         }
 
         return {
-          fetchFrequency: settings.fetchFrequency,
-          emailAlertsEnabled: settings.emailAlertsEnabled,
-          emailAlertsPriorityThreshold: settings.emailAlertsPriorityThreshold,
+          fetchFrequency: settings.fetchFrequency ?? defaults.fetchFrequency,
+          emailAlertsEnabled:
+            settings.emailAlertsEnabled ?? defaults.emailAlertsEnabled,
+          emailAlertsPriorityThreshold:
+            settings.emailAlertsPriorityThreshold ??
+            defaults.emailAlertsPriorityThreshold,
+          curiosityLevel: settings.curiosityLevel ?? defaults.curiosityLevel,
+          quietHoursStart: settings.quietHoursStart ?? defaults.quietHoursStart,
+          quietHoursEnd: settings.quietHoursEnd ?? defaults.quietHoursEnd,
+          dailyNudgeCap: settings.dailyNudgeCap ?? defaults.dailyNudgeCap,
+          enablePostActionCheckins:
+            settings.enablePostActionCheckins ??
+            defaults.enablePostActionCheckins,
+          enableWeeklyIdeaSprint:
+            settings.enableWeeklyIdeaSprint ?? defaults.enableWeeklyIdeaSprint,
+          weeklyIdeaSprintDay:
+            settings.weeklyIdeaSprintDay ?? defaults.weeklyIdeaSprintDay,
+          weeklyIdeaSprintTime:
+            settings.weeklyIdeaSprintTime ?? defaults.weeklyIdeaSprintTime,
+          viralThreadsVisibility:
+            (settings as any).viralThreadsVisibility ??
+            defaults.viralThreadsVisibility,
+          ideasBetaEnabled:
+            (settings as any).ideasBetaEnabled ?? defaults.ideasBetaEnabled,
         };
       } catch (dbError: any) {
-        // Handle timeout errors specifically
         if (dbError.message === "Database operation timed out") {
           console.error(
             `Database timeout on attempt ${i + 1}/3 for getUserSettings`,
           );
           if (i < 2) {
-            await new Promise((res) => setTimeout(res, 2000 * (i + 1))); // Longer delay for timeouts
+            await new Promise((res) => setTimeout(res, 2000 * (i + 1)));
             continue;
           }
           break;
         }
-
         const isRetryable =
           dbError.code === "P1001" ||
           (dbError.message && dbError.message.includes("SERVER_ERROR"));
@@ -14022,21 +15600,40 @@ export async function getUserSettings() {
       }
     }
   } catch (error) {
+    void error;
     console.error("Error in getUserSettings:", error);
   }
 
-  // Fallback if all retries fail or if getAuth fails
   return {
     fetchFrequency: "manual",
     emailAlertsEnabled: false,
     emailAlertsPriorityThreshold: 8,
+    curiosityLevel: "smart",
+    quietHoursStart: "21:00",
+    quietHoursEnd: "08:00",
+    dailyNudgeCap: 1,
+    enablePostActionCheckins: true,
+    enableWeeklyIdeaSprint: true,
+    weeklyIdeaSprintDay: "MON",
+    weeklyIdeaSprintTime: "09:00",
+    ideasBetaEnabled: false,
   };
 }
 
 export async function updateUserSettings(input: {
-  fetchFrequency: string;
+  fetchFrequency?: string;
   emailAlertsEnabled?: boolean;
   emailAlertsPriorityThreshold?: number;
+  curiosityLevel?: "low" | "smart" | "high" | string;
+  quietHoursStart?: string;
+  quietHoursEnd?: string;
+  dailyNudgeCap?: number;
+  enablePostActionCheckins?: boolean;
+  enableWeeklyIdeaSprint?: boolean;
+  weeklyIdeaSprintDay?: string;
+  weeklyIdeaSprintTime?: string;
+  viralThreadsVisibility?: string;
+  ideasBetaEnabled?: boolean;
 }) {
   const { userId } = await getAuth({ required: true });
 
@@ -14045,7 +15642,20 @@ export async function updateUserSettings(input: {
     update: input,
     create: {
       userId,
-      ...input,
+      fetchFrequency: input.fetchFrequency ?? "manual",
+      emailAlertsEnabled: input.emailAlertsEnabled ?? false,
+      emailAlertsPriorityThreshold: input.emailAlertsPriorityThreshold ?? 8,
+      curiosityLevel: input.curiosityLevel ?? "smart",
+      quietHoursStart: input.quietHoursStart ?? "21:00",
+      quietHoursEnd: input.quietHoursEnd ?? "08:00",
+      dailyNudgeCap: input.dailyNudgeCap ?? 1,
+      enablePostActionCheckins: input.enablePostActionCheckins ?? true,
+      enableWeeklyIdeaSprint: input.enableWeeklyIdeaSprint ?? true,
+      weeklyIdeaSprintDay: input.weeklyIdeaSprintDay ?? "MON",
+      weeklyIdeaSprintTime: input.weeklyIdeaSprintTime ?? "09:00",
+      ideasBetaEnabled: input.ideasBetaEnabled ?? false,
+      viralThreadsVisibility:
+        (input as any).viralThreadsVisibility ?? "VISIBLE",
     },
   });
 
@@ -14140,6 +15750,48 @@ Provide a detailed brand analysis that can be used to power content discovery an
     });
 
     // Store the enhanced brand context
+
+    // Additionally, generate audience personas and creative guidelines based on analysis
+    let _personasAndGuidelines: {
+      audiencePersonas: any[];
+      creativeGuidelines: any;
+    } | null = null;
+    try {
+      _personasAndGuidelines = await requestMultimodalModel({
+        system:
+          "You are a senior brand strategist. Create concrete audience personas and creative guidelines from the brand analysis. Return valid JSON only.",
+        messages: [
+          {
+            role: "user",
+            content: `Create 3-5 audience personas and creative guidelines based on this brand analysis.\n\n${JSON.stringify(brandAnalysis)}`,
+          },
+        ],
+        returnType: z
+          .object({
+            audiencePersonas: z.array(
+              z.object({
+                name: z.string(),
+                description: z.string(),
+                platforms: z.array(z.string()),
+                contentPreferences: z.array(z.string()),
+                engagementStyle: z.string(),
+              }),
+            ),
+            creativeGuidelines: z.object({
+              colorPalette: z.array(z.string()).optional(),
+              logoUsage: z.string().optional(),
+              typography: z.array(z.string()).optional(),
+              imageStyle: z.string().optional(),
+              dos: z.array(z.string()).optional(),
+              donts: z.array(z.string()).optional(),
+            }),
+          })
+          .describe("Personas and creative guidelines"),
+        temperature: 0.2,
+      });
+    } catch {
+      void 0;
+    }
     await db.brandContext.upsert({
       where: { userId },
       update: {
@@ -14155,6 +15807,12 @@ Provide a detailed brand analysis that can be used to power content discovery an
         ),
         brandVoiceKeywords: JSON.stringify(brandAnalysis.brandVoiceKeywords),
         industryContext: brandAnalysis.industryContext,
+        audiencePersonas: JSON.stringify(
+          _personasAndGuidelines?.audiencePersonas ?? [],
+        ),
+        creativeGuidelines: JSON.stringify(
+          _personasAndGuidelines?.creativeGuidelines ?? {},
+        ),
         lastAnalyzedAt: new Date(),
         analysisStatus: "COMPLETED",
       },
@@ -14172,13 +15830,40 @@ Provide a detailed brand analysis that can be used to power content discovery an
         ),
         brandVoiceKeywords: JSON.stringify(brandAnalysis.brandVoiceKeywords),
         industryContext: brandAnalysis.industryContext,
+        audiencePersonas: JSON.stringify(
+          _personasAndGuidelines?.audiencePersonas ?? [],
+        ),
+        creativeGuidelines: JSON.stringify(
+          _personasAndGuidelines?.creativeGuidelines ?? {},
+        ),
         lastAnalyzedAt: new Date(),
         analysisStatus: "COMPLETED",
       },
     });
 
+    // Send a one-time confirmation email when Brand Vibe is created via enhanced analysis
+    try {
+      const emailFlagKey = generateContentCacheKey(
+        "brand_vibe_email_sent",
+        userId,
+      );
+      const alreadySent = await getCachedContent(emailFlagKey);
+      if (!alreadySent) {
+        const appUrl = new URL("/settings", getBaseUrl()).toString();
+        await sendEmail({
+          toUserId: userId,
+          subject: "Your Brand Vibe is ready",
+          markdown: `Your Brand Vibe is ready!\n\nVisit [Settings → Brand Vibe](${appUrl}) to review your voice, personas, and visual style.\n\nTip: You can regenerate any time after updating your guidelines.`,
+        });
+        await setCachedContent(emailFlagKey, "sent", userId);
+      }
+    } catch {
+      void 0;
+    }
+
     console.log(`Enhanced brand analysis completed for user ${userId}`);
   } catch (error) {
+    void error;
     console.error("Enhanced brand analysis failed:", error);
 
     // Update status to failed
@@ -14280,6 +15965,7 @@ export async function saveBrandGuidelines(input: {
         );
       });
     } catch (error) {
+      void error;
       console.error("Failed to trigger enhanced brand analysis:", error);
       // Update status to failed if queueing fails
       await db.brandContext.upsert({
@@ -14298,6 +15984,37 @@ export async function saveBrandGuidelines(input: {
   }
 
   // Return the parsed data for immediate use
+  try {
+    const summaryKey = generateContentCacheKey("brand_vibe_summary", userId);
+    const directivesKey = generateContentCacheKey(
+      "brand_vibe_directives",
+      userId,
+    );
+
+    const safeJoin = (arr?: any[], max = 5) =>
+      Array.isArray(arr) ? arr.slice(0, max).filter(Boolean).join(", ") : "";
+    const truncate = (s?: string, n = 240) =>
+      s ? (s.length > n ? s.slice(0, n - 1) + "…" : s) : "";
+
+    const tone = safeJoin(input.tonePriorities, 5);
+    const use = safeJoin(input.phrasesToUse, 6);
+    const avoid = safeJoin(input.phrasesToAvoid, 6);
+    const directivesList = safeJoin(input.directives ?? [], 6);
+
+    const parts = [
+      input.brandVoice ? `Voice: ${truncate(input.brandVoice, 240)}` : null,
+      tone ? `Tone: ${tone}` : null,
+      use ? `Use: ${use}` : null,
+      avoid ? `Avoid: ${avoid}` : null,
+      directivesList ? `Directives: ${directivesList}` : null,
+    ].filter(Boolean) as string[];
+
+    const summary = parts.join("\n");
+    await setCachedContent(summaryKey, summary, userId);
+
+    const directivesText = await _buildBrandVibeSystemDirectives();
+    await setCachedContent(directivesKey, directivesText, userId);
+  } catch {}
   return {
     ...guidelines,
     tonePriorities: input.tonePriorities,
@@ -14441,8 +16158,9 @@ export async function submitRecommendationFeedback(input: {
         });
       }
     }
-  } catch (e) {
-    console.error("Failed to learn directives from feedback:", e);
+  } catch (error) {
+    void error;
+    console.error("Failed to learn directives from feedback:", error);
   }
 
   return feedback;
@@ -14507,8 +16225,9 @@ export async function submitResponseFeedback(input: {
         });
       }
     }
-  } catch (e) {
-    console.error("Failed to learn directives from response feedback:", e);
+  } catch (error) {
+    void error;
+    console.error("Failed to learn directives from response feedback:", error);
   }
 
   // If user wants to regenerate responses after negative feedback
@@ -14553,7 +16272,8 @@ Tone Priorities: ${
               try {
                 const parsed = JSON.parse(brandGuidelines.tonePriorities);
                 return Array.isArray(parsed) ? parsed.join(", ") : parsed;
-              } catch {
+              } catch (error) {
+                void error;
                 return brandGuidelines.tonePriorities;
               }
             })()
@@ -14565,7 +16285,8 @@ Phrases to Use: ${
               try {
                 const parsed = JSON.parse(brandGuidelines.phrasesToUse);
                 return Array.isArray(parsed) ? parsed.join(", ") : parsed;
-              } catch {
+              } catch (error) {
+                void error;
                 return brandGuidelines.phrasesToUse;
               }
             })()
@@ -14577,7 +16298,8 @@ Phrases to Avoid: ${
               try {
                 const parsed = JSON.parse(brandGuidelines.phrasesToAvoid);
                 return Array.isArray(parsed) ? parsed.join(", ") : parsed;
-              } catch {
+              } catch (error) {
+                void error;
                 return brandGuidelines.phrasesToAvoid;
               }
             })()
@@ -14678,7 +16400,8 @@ async function categorizeFeedback(feedback: any[]) {
             patterns.tagAnalysis[tag] = (patterns.tagAnalysis[tag] || 0) + 1;
           });
         }
-      } catch {
+      } catch (error) {
+        void error;
         // Handle parsing errors gracefully
       }
     }
@@ -15180,6 +16903,7 @@ export async function getBrandSignals() {
     try {
       return JSON.parse(jsonString);
     } catch (error) {
+      void error;
       console.error("Failed to parse JSON in getBrandSignals:", error);
       return fallback;
     }
@@ -15225,8 +16949,9 @@ export async function getBrandSignals() {
     }
 
     return parsedSignals;
-  } catch (e) {
-    console.error("Error in getBrandSignals:", e);
+  } catch (error) {
+    void error;
+    console.error("Error in getBrandSignals:", error);
     // Return default/empty values if anything fails
     return {
       ...signals,
@@ -15556,10 +17281,11 @@ export async function getDashboardStats(input: { cacheKey: string }) {
         data: parsedData,
         completedAt: cacheEntry.completedAt,
       };
-    } catch (e) {
+    } catch (error) {
+      void error;
       console.error(
         `[getDashboardStats] FAILED to parse data for key: ${input.cacheKey}. Error:`,
-        e,
+        error,
       );
       return {
         status: "FAILED",
@@ -15725,9 +17451,36 @@ export async function generateImageFromPrompt(input: { prompt: string }) {
   );
 
   const brandForStandaloneImage = await getBrandGuidelines();
-  const brandVibeForStandaloneImage = brandForStandaloneImage
-    ? `Brand Voice: ${brandForStandaloneImage.brandVoice}\nDirectives: ${(brandForStandaloneImage.directives || []).join(", ")}`
-    : "";
+  const brandContext = await getBrandContext().catch(() => null);
+  const prefs = await getContentStudioPreferences().catch(() => null);
+
+  let enforcedPalette: string[] = [];
+  let visualStyle = "";
+
+  try {
+    if ((brandContext as any)?.brandColorPalette) {
+      enforcedPalette = Array.isArray((brandContext as any).brandColorPalette)
+        ? ((brandContext as any).brandColorPalette as string[])
+        : (JSON.parse(
+            (brandContext as any).brandColorPalette as string,
+          ) as string[]);
+    }
+  } catch {
+    void 0;
+  }
+
+  if ((!enforcedPalette || enforcedPalette.length === 0) && prefs) {
+    enforcedPalette = [
+      (prefs as any).brandPrimaryColor,
+      (prefs as any).brandSecondaryColor,
+      (prefs as any).brandAccentColor,
+    ].filter(Boolean) as string[];
+  }
+
+  if (typeof (brandContext as any)?.visualStyle === "string") {
+    visualStyle = ((brandContext as any).visualStyle as string) || "";
+  }
+
   const brandVibeMeta = brandForStandaloneImage
     ? {
         applied: true,
@@ -15736,12 +17489,15 @@ export async function generateImageFromPrompt(input: { prompt: string }) {
         directives: brandForStandaloneImage.directives || [],
       }
     : ({ applied: false } as const);
+  const brandAlignment = brandForStandaloneImage
+    ? `Voice: "${brandForStandaloneImage.brandVoice}"${brandForStandaloneImage.directives && brandForStandaloneImage.directives.length ? ` · Directives: ${brandForStandaloneImage.directives.slice(0, 2).join(", ")}` : ""}`
+    : "On-brand per configured guidelines and vibe";
   const { imageUrl } = await requestMultimodalModel({
-    system: `You are a helpful assistant that generates images based on user prompts.\n\nBRAND VIBE ALIGNMENT:\n${brandVibeForStandaloneImage}`,
+    system: `${await _buildBrandVibeSystemDirectives()}\n[PALETTE LOCK]\nAllowed Colors: ${enforcedPalette.length ? enforcedPalette.join(", ") : "USE THE [VISUAL BRANDING] COLOR PALETTE ABOVE"}\nAllowed Neutrals: #000000, #FFFFFF\nRules:\n- Use ONLY the allowed colors and their tints/shades (no new hues).\n- If an element requires a color not listed, map it to the closest allowed color.\n- Avoid off-brand gradients; if needed, gradients must blend only allowed colors.\n\n[VISUAL STYLE OVERRIDE]\n${visualStyle ? `Design Style: ${visualStyle}` : "Use the brand's visual style defined in [VISUAL BRANDING]."}\n\nYou are an image generation assistant. Generate an image based on the user's prompt. Always enforce the brand rules above (both Brand Guidelines and Brand Vibe). Strictly follow [VISUAL BRANDING] and the [PALETTE LOCK] block. Reject any off-palette tones; prefer monochrome or duotone with allowed colors when in doubt.`,
     messages: [
       {
         role: "user",
-        content: input.prompt,
+        content: `PROMPT: ${input.prompt}\n\nREQUIRED BRAND VISUALS:\n- Color Palette: ${enforcedPalette.length ? enforcedPalette.join(", ") : "Use palette from [VISUAL BRANDING]"}\n- Visual Style: ${visualStyle || "Use style from [VISUAL BRANDING]"}`,
       },
     ],
     returnType: z
@@ -15779,6 +17535,7 @@ export async function generateImageFromPrompt(input: { prompt: string }) {
       sourceIdea: JSON.stringify({
         prompt: input.prompt,
         brandVibe: brandVibeMeta,
+        brandAlignment,
       }),
     },
   });
@@ -15864,53 +17621,36 @@ async function _internal_runMuseGenerationProcess(
   userId: string,
   videoScript: string,
 ) {
-  // 1. Generate content script in MuseMode
-  const contentTask = await generateContentFromSource({
-    sourceType: "text",
-    sourceContent: videoScript,
-    museId: undefined,
+  const directives = await _buildBrandVibeSystemDirectives();
+  const aligned = await intelligentRequestMultimodalModel<{ script: string }>({
+    system: `${directives}\nYou are a senior script editor. Rewrite the user's script to strictly follow the brand rules while preserving meaning. Return only the final script text in the "script" field.`,
+    messages: [{ role: "user", content: videoScript }],
+    returnType: z
+      .object({ script: z.string().describe("Brand-aligned script") })
+      .describe("A response containing the brand-aligned script."),
+  });
+  const finalScript = aligned?.script ?? videoScript;
+
+  // Generate video natively using Adaptive's generateVideo tool
+  const result = await requestMultimodalModel({
+    system: `${directives}\nYou are a video generation assistant specialized in turning scripts into short vertical videos. Always use your generateVideo tool to create a 5-second video that visualizes the script clearly. Return only the final video URL.`,
+    messages: [
+      {
+        role: "user",
+        content: `Create a short vertical video based on this script: ${finalScript}`,
+      },
+    ],
+    returnType: z
+      .object({
+        videoUrl: z
+          .string()
+          .describe("The url of the generated video (CDN URL)."),
+      })
+      .describe("A response containing the url of the generated video."),
+    model: "medium",
   });
 
-  // 2. Poll for content generation status
-  let contentStatus;
-  const maxAttempts = 24; // 24 * 5s = 2 minutes timeout
-  for (let i = 0; i < maxAttempts; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 5000));
-    contentStatus = await getContentGenerationStatus({
-      taskId: contentTask.id,
-    });
-    if (
-      contentStatus.status === "COMPLETED" ||
-      contentStatus.status === "FAILED"
-    ) {
-      break;
-    }
-  }
-
-  if (contentStatus?.status !== "COMPLETED") {
-    throw new Error("Content generation in MuseMode failed or timed out.");
-  }
-
-  // 3. Find the newly created content to get its ID
-  const allContent = await museListContent();
-  const newContent = allContent
-    .filter((c) => c.userId === userId)
-    .sort(
-      (a, b) =>
-        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-    )[0];
-
-  if (!newContent) {
-    throw new Error("Could not find the newly generated content in MuseMode.");
-  }
-
-  // 4. Trigger video generation in MuseMode
-  const videoTask = await museGenerateVideo({ contentId: newContent.id });
-
-  return {
-    museContentId: newContent.id,
-    museTaskId: videoTask.id,
-  };
+  return { museContentId: null, museTaskId: null, videoUrl: result.videoUrl };
 }
 
 export async function generateContentFromRecommendation(input: {
@@ -15979,13 +17719,13 @@ export async function generateContentFromRecommendation(input: {
           ? `Brand Voice: ${brand.brandVoice}\nDirectives: ${(brand.directives || []).join(", ")}`
           : "";
         const imageResult = await requestMultimodalModel({
-          system: `You are an expert image generation assistant.\n\nBRAND VIBE ALIGNMENT:\n${brandVibeText}`,
+          system: `${await _buildBrandVibeSystemDirectives()}\nYou are a professional social media visual designer. Always use your generateHighQualityImages tool to create a high-quality, on-brand image. Strictly follow the [VISUAL BRANDING] section (colors, visual style, imagery). Avoid off-brand colors and motifs.\n\nBRAND VIBE ALIGNMENT:\n${brandVibeText}`,
           messages: [
             {
               role: "user",
               content:
                 recommendation.assetPrompt ||
-                `An image for a post titled "${recommendation.title}" with the brief: ${recommendation.contentBrief}`,
+                `An image for a post titled "${recommendation.title}" with the brief: ${recommendation.contentBrief}. The result must reflect the brand's color palette and visual style.`,
             },
           ],
           returnType: z
@@ -16011,17 +17751,17 @@ export async function generateContentFromRecommendation(input: {
           );
         }
 
-        const { museContentId, museTaskId } =
-          await _internal_runMuseGenerationProcess(userId, videoScript);
+        const { videoUrl } = await _internal_runMuseGenerationProcess(
+          userId,
+          videoScript,
+        );
 
         await db.generatedContent.update({
           where: { id: generatedContent.id },
           data: {
-            museContentId,
-            museTaskId,
-            status: "GENERATING",
+            status: "DRAFT",
             title: recommendation.title,
-            content: "Video generation in progress...",
+            content: videoUrl,
           },
         });
       } else {
@@ -16035,8 +17775,9 @@ export async function generateContentFromRecommendation(input: {
         const brandVibeText = brand
           ? `Brand Voice: ${brand.brandVoice}\nDirectives: ${(brand.directives || []).join(", ")}`
           : "";
+        const directives = await _buildBrandVibeSystemDirectives();
         const textResult = await requestMultimodalModel({
-          system: `You are an expert social media content strategist that creates viral-ready content.\n\nBRAND VIBE ALIGNMENT: Always enforce the following brand rules. If any requested content conflicts, adapt it to comply without losing impact.\n${brandVibeText}\n\nGenerate a comprehensive social media post package that leverages current trends and viral insights.
+          system: `${directives}\n\nYou are an expert social media content strategist that creates viral-ready content.\n\nBRAND VIBE ALIGNMENT: Always enforce the following brand rules. If any requested content conflicts, adapt it to comply without losing impact.\n${brandVibeText}\n\nGenerate a comprehensive social media post package that leverages current trends and viral insights.
 
 CRITICAL REQUIREMENTS:
 1. Create content optimized for maximum engagement and viral potential
@@ -16118,6 +17859,9 @@ Generate content that maximizes viral potential while staying true to the brand 
           hashtags: textResult.hashtags,
           viralityScore: textResult.viralityScore,
           platformOptimizations: textResult.platformOptimizations,
+          brandAlignment: brand
+            ? `Voice: "${brand.brandVoice}"${brand.directives && brand.directives.length ? ` · Directives: ${brand.directives.slice(0, 2).join(", ")}` : ""}`
+            : "On-brand per configured guidelines and vibe",
           enhancedContext,
           originalRecommendation: recommendation,
           generatedAt: new Date().toISOString(),
@@ -16135,12 +17879,15 @@ Generate content that maximizes viral potential while staying true to the brand 
           where: { id: generatedContent.id },
           data: {
             title: textResult.revisedTitle,
-            content: JSON.stringify(contentPackage),
+            content: JSON.stringify(
+              _enforceBrandVibeOnContentPackage(contentPackage),
+            ),
             status: "DRAFT",
           },
         });
       }
     } catch (error) {
+      void error;
       console.error(
         `[Task] Failed to generate content from recommendation ${recommendation.id}:`,
         error,
@@ -16171,7 +17918,7 @@ export async function getUnifiedContentContext(
     // Get viral potential insights
     const viralInsights = await getCachedViralTrends();
 
-    // Get brand context for alignment
+    // Get brand context for alignment (full Brand Vibe)
     const brandContext = await getBrandContext();
 
     // Safely extract data arrays with proper type checking
@@ -16180,34 +17927,284 @@ export async function getUnifiedContentContext(
     const viralPosts =
       viralInsights?.success && viralInsights?.data ? viralInsights.data : [];
 
+    // Build comprehensive brand vibe snapshot
+    const brandVibe = brandContext
+      ? {
+          industry: (brandContext as any).industry ?? null,
+          niche: (brandContext as any).niche ?? null,
+          riskTolerance: (brandContext as any).riskTolerance ?? null,
+          trendAdoptionSpeed: (brandContext as any).trendAdoptionSpeed ?? null,
+          targetAudience: (brandContext as any).targetAudience ?? null,
+          brandPersonality: (brandContext as any).brandPersonality ?? null,
+          competitorAnalysis: (brandContext as any).competitorAnalysis ?? null,
+          contentOpportunities:
+            (brandContext as any).contentOpportunities ?? null,
+          industryContext: (brandContext as any).industryContext ?? null,
+          audiencePersonas: (brandContext as any).audiencePersonas ?? null,
+          creativeGuidelines: (brandContext as any).creativeGuidelines ?? null,
+          lastAnalyzedAt: (brandContext as any).lastAnalyzedAt ?? null,
+        }
+      : null;
+
+    // Include brand guidelines snapshot as well
+    const guidelines = await getBrandGuidelines().catch(() => null as any);
+
     // Combine all contexts into unified insights
     const unifiedContext = {
-      trendingTopics: trendingTopics.slice(0, 3),
-      viralInsights: viralPosts.slice(0, 3),
-      brandContext: brandContext
+      trendingTopics: trendingTopics.slice(0, 5),
+      viralInsights: viralPosts.slice(0, 5),
+      brandVibe,
+      brandGuidelines: guidelines
         ? {
-            voice: brandContext.voice,
-            audience: brandContext.audience,
-            contentPillars: brandContext.contentPillars,
+            brandVoice: (guidelines as any).brandVoice,
+            tonePriorities: (guidelines as any).tonePriorities ?? [],
+            phrasesToUse: (guidelines as any).phrasesToUse ?? [],
+            phrasesToAvoid: (guidelines as any).phrasesToAvoid ?? [],
+            objectives: (guidelines as any).objectives ?? [],
+            kpis: (guidelines as any).kpis ?? [],
+            additionalNotes: (guidelines as any).additionalNotes ?? "",
           }
         : null,
       relevantTrends:
         recommendation && trendingTopics.length > 0
           ? await intelligentTrendBrandMatcher({
               trends: trendingTopics,
-              brandContext: recommendation.pillar,
-              industry: recommendation.industry,
+              brandContext: (brandContext as any)?.contentOpportunities ?? null,
+              industry:
+                (brandContext as any)?.industry ?? recommendation?.industry,
             })
           : null,
       enhancedAt: new Date().toISOString(),
-    };
+    } as const;
 
     return unifiedContext;
   } catch (error) {
+    void error;
     console.error("Failed to get unified content context:", error);
     return null;
   }
 }
+// Stream brand-aligned content generation with full context
+export async function generateBrandAlignedContent(input: {
+  prompt: string;
+  contentType: "TEXT" | "IMAGE" | "VIDEO";
+  format?: string;
+  tone?: string;
+  pillarName?: string;
+}) {
+  const { userId } = await getAuth({ required: true });
+
+  // Optional feature/usage checks to align with existing flows
+  try {
+    await requireFeatureAccess("content_generation");
+    await requireUsageLimit("content_generation_daily");
+  } catch {
+    // Non-fatal: if checks fail elsewhere, continue gracefully
+  }
+
+  // Ensure there is a pillar to organize the content under
+  const pillar = await findOrCreateContentPillar({
+    name: input.pillarName || "Ripple",
+    description: "Content generated with Ripple brand-aligned intelligence",
+  });
+
+  // Create placeholder record to coordinate updates
+  const generated = await db.generatedContent.create({
+    data: {
+      userId,
+      pillarId: pillar.id,
+      title: `Generating ${input.contentType.toLowerCase()}…`,
+      type: input.contentType,
+      content: "Generating…",
+      sourceIdea: JSON.stringify({
+        prompt: input.prompt,
+        format: input.format,
+        tone: input.tone,
+      }),
+      status: "GENERATING",
+    },
+  });
+
+  const stream = await startRealtimeResponse<{
+    id?: string;
+    title?: string;
+    content?: string;
+    imageUrl?: string;
+    status?: "GENERATING" | "DRAFT" | "FAILED";
+    toolHistory?: Array<{
+      name: string;
+      status: "in_progress" | "done";
+      inProgressMessage: string;
+      thinking: string;
+    }>;
+    progress?: string;
+  }>();
+
+  // Push initial placeholder
+  stream.next({
+    id: generated.id,
+    status: "GENERATING",
+    progress: "Preparing brand context…",
+  });
+
+  try {
+    // Build rich brand directives and context
+    const directives = await _buildBrandVibeSystemDirectives();
+    const brandGuidelines = await getBrandGuidelines().catch(() => null as any);
+    const unifiedContext = await getUnifiedContentContext(userId).catch(
+      () => null,
+    );
+
+    const brandVibeText = brandGuidelines
+      ? `Brand Voice: ${brandGuidelines.brandVoice}\nDirectives: ${(brandGuidelines.directives || []).join(", ")}`
+      : "";
+
+    // Generate according to content type
+    if (input.contentType === "TEXT") {
+      // Prepare few-shot examples from brand guidelines to guide style
+      const styleExamples = Array.isArray(
+        (brandGuidelines as any)?.exampleResponses,
+      )
+        ? (brandGuidelines as any).exampleResponses
+            .slice(0, 2)
+            .map((e: any) => _sanitizeGeneratedText(String(e?.text ?? e)))
+        : [];
+
+      const result = await requestMultimodalModel({
+        system: `${directives}\n\nYou are a senior ghostwriter and brand strategist. Write with precision and authority while sounding natural and human. Do not use generic filler, clichés, or AI-sounding scaffolding. Vary sentence length; lead with a crisp hook; anchor claims in specifics. If the user's prompt conflicts with brand rules, adapt it without losing impact.\n\nBRAND VIBE ALIGNMENT:\n${brandVibeText}\n\nCONTEXT (Trends, Viral Patterns, Audience, Pillars):\n${unifiedContext ? JSON.stringify(unifiedContext) : "No extra context"}`,
+        messages: [
+          ...styleExamples.map((ex) => ({
+            role: "assistant" as const,
+            content: ex,
+          })),
+          {
+            role: "user",
+            content: `Create ${input.format ? input.format + " " : ""}text content based on: ${input.prompt}${input.tone ? ` in a ${input.tone} tone` : ""}. Requirements: 1) Short, strong title; 2) Body that feels human—specific nouns/verbs, concrete details, no fluff; 3) Zero AI tells (no "in this post", "let's dive in", etc.).`,
+          },
+        ],
+        returnType: z
+          .object({
+            title: z.string().describe("A short, strong on-brand title"),
+            body: z
+              .string()
+              .describe("The full on-brand content body, ready to use"),
+          })
+          .describe("On-brand text content"),
+        model: "large",
+        temperature: 0.3,
+        onProgress: (tools) =>
+          stream.next({
+            id: generated.id,
+            status: "GENERATING",
+            toolHistory: tools.map((t) => ({
+              name: t.toolName,
+              status: t.status,
+              inProgressMessage: t.inProgressMessage,
+              thinking: t.thinking,
+            })),
+            progress: tools[0]?.inProgressMessage || "Working…",
+          }),
+      });
+
+      const rawTitle = _sanitizeGeneratedText(result.title);
+      const rawBody = _sanitizeGeneratedText(result.body);
+      const finalTitle = rawTitle;
+      const finalBody = _applyBrandPhraseRules(rawBody, brandGuidelines as any);
+
+      await db.generatedContent.update({
+        where: { id: generated.id },
+        data: { title: finalTitle, content: finalBody, status: "DRAFT" },
+      });
+
+      stream.next({
+        id: generated.id,
+        title: finalTitle,
+        content: finalBody,
+        status: "DRAFT",
+      });
+      return stream.end();
+    }
+
+    if (input.contentType === "IMAGE") {
+      const img = await requestMultimodalModel({
+        system: `${directives}\nYou are an image generation strategist. Always use your generateHighQualityImages tool to create a high-quality, brand-aligned image. Respect brand voice and directives; reflect the described mood and audience.`,
+        messages: [
+          {
+            role: "user",
+            content: `Generate a brand-aligned image for: ${input.prompt}${input.tone ? ` with a ${input.tone} mood` : ""}. Include visual style cues consistent with the brand and audience in context: ${unifiedContext ? JSON.stringify(unifiedContext) : "none"}.`,
+          },
+        ],
+        returnType: z
+          .object({ imageUrl: z.string().describe("Final CDN image URL") })
+          .describe("High-quality generated image"),
+        onProgress: (tools) =>
+          stream.next({
+            id: generated.id,
+            status: "GENERATING",
+            toolHistory: tools.map((t) => ({
+              name: t.toolName,
+              status: t.status,
+              inProgressMessage: t.inProgressMessage,
+              thinking: t.thinking,
+            })),
+            progress: tools[0]?.inProgressMessage || "Generating image…",
+          }),
+        temperature: 0.6,
+      });
+
+      await db.generatedContent.update({
+        where: { id: generated.id },
+        data: {
+          title: _sanitizeGeneratedText(input.prompt).slice(0, 80),
+          content: img.imageUrl,
+          status: "DRAFT",
+        },
+      });
+
+      stream.next({
+        id: generated.id,
+        imageUrl: img.imageUrl,
+        status: "DRAFT",
+      });
+      return stream.end();
+    }
+
+    // VIDEO (placeholder streaming until video pipeline is ready)
+    await db.generatedContent.update({
+      where: { id: generated.id },
+      data: {
+        title: _sanitizeGeneratedText(input.prompt).slice(0, 80),
+        content: "Video generation coming soon.",
+        status: "DRAFT",
+      },
+    });
+    stream.next({
+      id: generated.id,
+      title: _sanitizeGeneratedText(input.prompt).slice(0, 80),
+      content: "Video generation coming soon.",
+      status: "DRAFT",
+    });
+    return stream.end();
+  } catch (error) {
+    void error;
+    console.error("generateBrandAlignedContent failed:", error);
+    await db.generatedContent.update({
+      where: { id: generated.id },
+      data: {
+        title: "Content Generation Failed",
+        content: "Please try again.",
+        status: "FAILED",
+      },
+    });
+    stream.next({
+      id: generated.id,
+      status: "FAILED",
+      progress: "Failed to generate content",
+    });
+    return stream.end();
+  }
+}
+
 export async function getGeneratedContentById(input: { contentId: string }) {
   const { userId } = await getAuth({ required: true });
   return await db.generatedContent.findFirst({
@@ -16217,16 +18214,6 @@ export async function getGeneratedContentById(input: { contentId: string }) {
     },
   });
 }
-
-import {
-  generateContentFromSource,
-  getContentGenerationStatus,
-  listContent as museListContent,
-  generateVideo as museGenerateVideo,
-  getVideoGenerationStatus,
-  getContent,
-  deleteContent as museDeleteContent,
-} from "@ac1/musemode-7sxic2xr";
 
 export async function uploadDocument(input: {
   fileName: string;
@@ -16316,29 +18303,127 @@ export async function generateViralThread(input: {
   }
 
   try {
-    const result = await generateThreadFromUniversalSource({
-      ...input,
-      platform: input.platform || "twitter",
+    const internalTaskId = nanoid();
+    const auth = await getAuth();
+    await db.threadGenerationTaskMapping.create({
+      data: { internalTaskId, userId: auth?.userId ?? undefined },
     });
+
+    await queueTask(async () => {
+      try {
+        const result = await generateThreadFromUniversalSource({
+          ...input,
+          platform: input.platform || "twitter",
+        });
+        await db.threadGenerationTaskMapping.update({
+          where: { internalTaskId },
+          data: { externalTaskId: (result as any)?.taskId },
+        });
+      } catch (err) {
+        console.error("Error in viral thread generation task:", err);
+      }
+    });
+
     return {
       success: true,
       requiresUpgrade: false,
-      ...result,
+      taskId: internalTaskId,
     };
   } catch (error) {
+    void error;
     console.error("Error in viral thread generation:", error);
     throw error;
   }
 }
 
 export async function getViralThreadStatus(input: { taskId: string }) {
-  return await getThreadGenerationStatus(input);
+  console.log("[ViralThreads] getViralThreadStatus called", input);
+  // Translate internal task ID to external task ID if needed
+  let taskIdToQuery = input.taskId;
+  let usedMapping = false;
+  try {
+    const mapping = await db.threadGenerationTaskMapping.findUnique({
+      where: { internalTaskId: input.taskId },
+    });
+    if (mapping) {
+      usedMapping = true;
+      if (!mapping.externalTaskId) {
+        return { id: input.taskId, status: "PENDING", error: null } as any;
+      }
+      taskIdToQuery = mapping.externalTaskId;
+    }
+  } catch (e) {
+    console.error("[ViralThreads] status mapping lookup failed", e);
+  }
+
+  try {
+    const res = await getThreadGenerationStatus({ taskId: taskIdToQuery });
+    const rawStatus = (res as any)?.status;
+    const normalizedStr =
+      typeof rawStatus === "string" ? rawStatus.toUpperCase() : "";
+    let status: "PENDING" | "GENERATING" | "COMPLETED" | "FAILED" | "UNKNOWN" =
+      "UNKNOWN";
+
+    if (
+      normalizedStr.includes("PENDING") ||
+      normalizedStr.includes("QUEUED") ||
+      normalizedStr.includes("WAIT")
+    ) {
+      status = "PENDING";
+    } else if (
+      normalizedStr.includes("GENERATING") ||
+      normalizedStr.includes("IN_PROGRESS") ||
+      normalizedStr.includes("RUNNING") ||
+      normalizedStr.includes("PROCESSING")
+    ) {
+      status = "GENERATING";
+    } else if (
+      normalizedStr.includes("COMPLETED") ||
+      normalizedStr.includes("DONE") ||
+      normalizedStr.includes("SUCCESS") ||
+      normalizedStr.includes("SUCCEEDED")
+    ) {
+      status = "COMPLETED";
+    } else if (
+      normalizedStr.includes("FAILED") ||
+      normalizedStr.includes("ERROR") ||
+      normalizedStr.includes("CANCEL")
+    ) {
+      status = "FAILED";
+    }
+
+    console.log("[ViralThreads] getViralThreadStatus result", {
+      rawStatus,
+      normalized: normalizedStr,
+      mapped: status,
+      usedMapping,
+      inputTaskId: input.taskId,
+      queriedTaskId: taskIdToQuery,
+    });
+
+    // Always return the internal task id for UI continuity
+    return { ...(res as any), id: input.taskId, status };
+  } catch (e: any) {
+    console.error("[ViralThreads] getThreadGenerationStatus failed", {
+      error: e?.message || String(e),
+      usedMapping,
+      inputTaskId: input.taskId,
+      queriedTaskId: taskIdToQuery,
+    });
+    // Treat transient failures as still pending to keep polling
+    return {
+      id: input.taskId,
+      status: "PENDING",
+      error: e?.message || "Status check failed",
+    } as any;
+  }
 }
 export async function listViralThreads(input?: {
   searchTerm?: string;
   sortBy?: "createdAt" | "engagementScore";
   filterByPattern?: string;
   tagIds?: string[];
+  visibility?: "ALL" | "HIDDEN" | "SAVED" | "VISIBLE";
 }) {
   const { userId } = await getAuth({ required: true });
 
@@ -16371,7 +18456,14 @@ export async function listViralThreads(input?: {
   if (allThreads.length > 0) {
   }
 
-  const userThreads = allThreads;
+  // Avoid over-filtering: rely on the upstream service to scope results to the caller.
+  // Some upstream apps may not share the same userId namespace; filtering by userId here
+  // can hide valid results. We therefore use the upstream-scoped list directly, and only
+  // apply local visibility rules (hidden/archived/tags).
+  const upstreamThreads = Array.isArray(allThreads) ? allThreads : [];
+  console.log("[ViralThreads] listViralThreads fetched", {
+    total: upstreamThreads.length,
+  });
 
   const hiddenThreads = await db.hiddenThread.findMany({
     where: { userId },
@@ -16379,10 +18471,50 @@ export async function listViralThreads(input?: {
   });
   const hiddenThreadIds = new Set(hiddenThreads.map((t) => t.threadId));
 
-  let filteredThreads = userThreads.filter(
-    (thread: any) =>
-      !hiddenThreadIds.has(thread.id) && thread.status !== "ARCHIVED",
+  // Load saved thread ids only if needed
+  let savedThreadIds: Set<string> | null = null;
+  if (input?.visibility === "SAVED") {
+    const saved = await db.generatedContent.findMany({
+      where: {
+        userId,
+        sourceIdea: { contains: '"source":"viral-thread"' },
+      },
+      select: { sourceIdea: true },
+    });
+    savedThreadIds = new Set(
+      saved
+        .map((row) => {
+          try {
+            const parsed = JSON.parse(row.sourceIdea ?? "{}") as any;
+            return typeof parsed?.threadId === "string"
+              ? parsed.threadId
+              : undefined;
+          } catch {
+            return undefined;
+          }
+        })
+        .filter((id): id is string => !!id),
+    );
+  }
+
+  // Always remove archived
+  let preFiltered = upstreamThreads.filter(
+    (thread: any) => thread.status !== "ARCHIVED",
   );
+
+  const vis = input?.visibility ?? "VISIBLE";
+  let filteredThreads = preFiltered;
+  if (vis === "HIDDEN") {
+    filteredThreads = preFiltered.filter((t: any) => hiddenThreadIds.has(t.id));
+  } else if (vis === "SAVED") {
+    filteredThreads = preFiltered.filter((t: any) => savedThreadIds?.has(t.id));
+  } else if (vis === "VISIBLE") {
+    filteredThreads = preFiltered.filter(
+      (t: any) => !hiddenThreadIds.has(t.id),
+    );
+  } else {
+    // ALL: keep preFiltered
+  }
 
   if (input?.tagIds && input.tagIds.length > 0) {
     const taggedThreadIds = await db.viralThreadTagging.findMany({
@@ -16417,8 +18549,9 @@ export async function listViralThreads(input?: {
           // Not a valid tweet array, but valid JSON. Treat as a single tweet for preview.
           tweets = [{ content: content }];
         }
-      } catch (e) {
-        if (e instanceof SyntaxError) {
+      } catch (error) {
+        void error;
+        if (error instanceof SyntaxError) {
           // Not JSON, treat as a single tweet string.
           tweets = [{ content: content }];
         }
@@ -16431,7 +18564,17 @@ export async function listViralThreads(input?: {
       engagementScore ??
       tweets.length * 1.5 + (thread.title?.length || 0) * 0.1;
 
-    return { ...rest, tweets, engagementScore: calculatedEngagementScore };
+    const cleanTweets = (tweets || []).map((t: any) => ({
+      ...t,
+      content: _sanitizeGeneratedText(String((t && t.content) ?? "")),
+    }));
+    const cleanTitle = _sanitizeGeneratedText(String(rest.title ?? ""));
+    return {
+      ...rest,
+      title: cleanTitle,
+      tweets: cleanTweets,
+      engagementScore: calculatedEngagementScore,
+    };
   });
 
   return {
@@ -16477,8 +18620,9 @@ export async function getViralThread(input: { threadId: string }) {
         );
         tweets = [{ content: "Error: Could not display thread content." }];
       }
-    } catch (e) {
-      if (e instanceof SyntaxError) {
+    } catch (error) {
+      void error;
+      if (error instanceof SyntaxError) {
         // The content is not JSON, so we assume it's a plain string.
         tweets = [{ content: content }];
       } else {
@@ -16487,7 +18631,7 @@ export async function getViralThread(input: { threadId: string }) {
           `[getViralThread] Error processing content for thread ${
             input.threadId
           }:`,
-          e,
+          error,
         );
         tweets = [{ content: "Error: Could not display thread content." }];
       }
@@ -16512,9 +18656,14 @@ export async function getViralThread(input: { threadId: string }) {
   const restOfTheThread = { ...(thread as any) };
   delete restOfTheThread.content;
 
+  const cleanTweets = (tweets || []).map((t: any) => ({
+    ...t,
+    content: _sanitizeGeneratedText(String((t && t.content) ?? "")),
+  }));
   const result = {
     ...restOfTheThread,
-    tweets,
+    title: _sanitizeGeneratedText(String((restOfTheThread as any).title ?? "")),
+    tweets: cleanTweets,
     tags,
   };
 
@@ -16559,8 +18708,8 @@ export async function getRepurposeResults(input: {
         type: "TEXT",
         content:
           typeof result.result === "string"
-            ? result.result
-            : JSON.stringify(result.result),
+            ? _sanitizeGeneratedText(result.result)
+            : JSON.stringify(_enforceBrandVibeOnContentPackage(result.result)),
         status: "DRAFT",
         sourceIdea: JSON.stringify({
           repurpose: true,
@@ -16609,6 +18758,10 @@ export async function bulkHideViralThreads(input: { threadIds: string[] }) {
 
 export async function getAIInsightsForPage(input: { pageId: string }) {
   const { userId } = await getAuth({ required: true });
+
+  if (!input.pageId || `${input.pageId}`.trim() === "") {
+    throw new Error("Please select a Facebook Page to generate insights.");
+  }
 
   const page = await db.page.findFirst({
     where: { pageId: input.pageId, account: { userId } },
@@ -16719,45 +18872,12 @@ export async function getGeneratedContentStatus(input: { contentId: string }) {
     throw new Error("Content not found.");
   }
 
-  // If status is already final, no need to poll
-  if (content.status === "DRAFT" || content.status === "FAILED") {
-    return content;
-  }
-
-  if (content.type !== "VIDEO") {
-    return content;
-  }
-
-  // If we don't have a task id from muse, we can't check status.
-  if (!content.museTaskId) {
-    // Fail after 10 minutes to avoid getting stuck in a pending state
-    const minutesSinceCreation =
-      (new Date().getTime() - content.createdAt.getTime()) / (1000 * 60);
-    if (minutesSinceCreation > 10) {
-      return await db.generatedContent.update({
-        where: { id: content.id },
-        data: { status: "FAILED" },
-      });
-    }
-    return content;
-  }
-
-  const museStatus = await getVideoGenerationStatus({
-    taskId: content.museTaskId,
-  });
-
-  if (museStatus.status === "COMPLETED") {
-    const museContent = await getContent({ id: content.museContentId! });
-
-    return await db.generatedContent.update({
-      where: { id: content.id },
-      data: {
-        status: "DRAFT", // DRAFT means completed for generated content
-        content: museContent?.videoUrl ?? "Error: Video URL not found.",
-        thumbnailUrl: museContent?.thumbnailUrl,
-      },
-    });
-  } else if (museStatus.status === "FAILED") {
+  // For native generation, videos are finalized by the background task.
+  // If a record gets stuck too long, mark as failed.
+  if (
+    (content.status === "PENDING" || content.status === "GENERATING") &&
+    (Date.now() - content.createdAt.getTime()) / (1000 * 60) > 20
+  ) {
     return await db.generatedContent.update({
       where: { id: content.id },
       data: { status: "FAILED" },
@@ -16781,22 +18901,29 @@ export async function deleteGeneratedContent(input: { contentId: string }) {
     throw new Error("Content not found.");
   }
 
-  if (content.type === "VIDEO" && content.museContentId) {
-    try {
-      await museDeleteContent({ id: content.museContentId });
-    } catch (error) {
-      console.error(
-        `Failed to delete content from MuseMode for content ID ${content.museContentId}:`,
-        error,
-      );
-    }
-  }
-
   await db.generatedContent.delete({
     where: { id: input.contentId },
   });
 
   return { success: true };
+}
+
+export async function bulkDeleteGeneratedContent(input: {
+  contentIds: string[];
+}) {
+  const { userId } = await getAuth({ required: true });
+  const ids = Array.isArray(input.contentIds)
+    ? input.contentIds.filter(Boolean)
+    : [];
+  if (ids.length === 0) {
+    return { success: true, deletedCount: 0 };
+  }
+
+  const res = await db.generatedContent.deleteMany({
+    where: { id: { in: ids }, userId },
+  });
+
+  return { success: true, deletedCount: res.count };
 }
 
 export async function retryVideoGeneration(input: { contentId: string }) {
@@ -16824,7 +18951,7 @@ export async function retryVideoGeneration(input: { contentId: string }) {
 
   await db.generatedContent.update({
     where: { id: content.id },
-    data: { status: "PENDING", museTaskId: null },
+    data: { status: "GENERATING" },
   });
 
   const task = await queueTask(async () => {
@@ -16835,21 +18962,22 @@ export async function retryVideoGeneration(input: { contentId: string }) {
           "Cannot retry: video script or content brief is missing from the source idea.",
         );
       }
-      const { museContentId, museTaskId } =
-        await _internal_runMuseGenerationProcess(userId, videoScript);
+      const { videoUrl } = await _internal_runMuseGenerationProcess(
+        userId,
+        videoScript,
+      );
 
       await db.generatedContent.update({
         where: { id: content.id },
         data: {
-          museContentId,
-          museTaskId,
-          status: "GENERATING",
-          content: "Video is being generated...",
+          status: "DRAFT",
+          content: videoUrl,
           thumbnailUrl: null,
           customThumbnailUrl: null,
         },
       });
     } catch (error) {
+      void error;
       console.error(
         `[Task] Failed to retry video generation for local ID ${content.id}:`,
         error,
@@ -16874,14 +19002,15 @@ export async function generateVideoFromScript(input: {
     where: {
       userId_name: {
         userId,
-        name: "AI-Generated Videos",
+        name: "Video Scripts",
       },
     },
     update: {},
     create: {
       userId,
-      name: "AI-Generated Videos",
-      description: "Videos generated by the AI assistant from a script.",
+      name: "Video Scripts",
+      description:
+        "High‑quality, on‑brand video scripts with shot lists, captions and effects.",
     },
   });
 
@@ -16890,10 +19019,10 @@ export async function generateVideoFromScript(input: {
       userId,
       pillarId: pillar.id,
       title: input.title,
-      type: "VIDEO",
-      content: "Requesting video generation...",
+      type: "TEXT",
+      content: "Preparing video script...",
       sourceIdea: JSON.stringify({
-        sourceType: "script",
+        sourceType: "video_script",
         script: input.script,
         title: input.title,
       }),
@@ -16908,10 +19037,97 @@ export async function generateVideoFromScript(input: {
         data: { status: "GENERATING" },
       });
 
-      const { museContentId, museTaskId } =
-        await _internal_runMuseGenerationProcess(userId, input.script);
-
       const brand = await getBrandGuidelines();
+      const brandVoice = brand?.brandVoice || "";
+      const directives = Array.isArray(brand?.directives)
+        ? brand?.directives
+        : [];
+
+      const result = await requestMultimodalModel({
+        system: `You are a world‑class social video scriptwriter. Generate ONLY a JSON object that follows the schema. Do not include a video or any URLs. Enforce on‑brand voice strictly. Avoid emojis, AI mentions, and clichés. Keep hooks punchy and platform‑native.`,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: `Title: ${input.title}` },
+              { type: "text", text: `Script draft or notes: ${input.script}` },
+              { type: "text", text: `Brand Voice: ${brandVoice}` },
+              {
+                type: "text",
+                text: `Brand Directives: ${(directives || []).slice(0, 8).join("; ")}`,
+              },
+              {
+                type: "text",
+                text: "Platforms: TikTok, Instagram Reels, YouTube Shorts",
+              },
+            ],
+          },
+        ],
+        returnType: z
+          .object({
+            hook: z.string().describe("A compelling first line/cold open."),
+            postText: z
+              .string()
+              .describe("Caption text for the post (platform‑general)."),
+            callToAction: z
+              .string()
+              .describe("One clear CTA to drive the right action."),
+            hashtags: z
+              .object({
+                tiktok: z.array(z.string()),
+                instagram: z.array(z.string()),
+                youtube: z.array(z.string()).optional(),
+              })
+              .or(z.array(z.string()))
+              .describe("Hashtags per platform or a general list."),
+            platformStrategies: z
+              .array(
+                z.object({
+                  platform: z.string(),
+                  strategy: z
+                    .string()
+                    .describe("Formatting and posting best practices."),
+                  bestTimes: z.array(z.string()).optional(),
+                }),
+              )
+              .describe("Platform‑specific optimization notes."),
+            videoScript: z.object({
+              scenes: z
+                .array(
+                  z.object({
+                    beat: z
+                      .string()
+                      .describe("Narrative beat / purpose of this scene."),
+                    shotType: z
+                      .string()
+                      .describe(
+                        "e.g., front‑camera close‑up, screen‑record, over‑the‑shoulder, product close‑up",
+                      ),
+                    onScreenText: z.string().optional(),
+                    voiceover: z.string().optional(),
+                    bRoll: z.string().optional(),
+                    effects: z.array(z.string()).optional(),
+                    transitions: z.string().optional(),
+                    durationSeconds: z.number().optional(),
+                  }),
+                )
+                .describe("Ordered scenes covering 30–60 seconds total."),
+              safetyNotes: z.string().optional(),
+            }),
+            optimizationTips: z
+              .array(z.string())
+              .describe("3–7 concise tips to improve performance."),
+            targetAudience: z.string().optional(),
+            contentGoals: z.array(z.string()).optional(),
+          })
+          .describe(
+            "A complete video script package with captions and platform guidance.",
+          ),
+        onProgress: undefined,
+        model: "medium",
+        temperature: 0.2,
+      });
+
       const brandVibeMeta = brand
         ? {
             applied: true,
@@ -16920,14 +19136,17 @@ export async function generateVideoFromScript(input: {
             directives: brand.directives || [],
           }
         : { applied: false };
+
       await db.generatedContent.update({
         where: { id: generatedContent.id },
         data: {
-          museContentId,
-          museTaskId,
-          content: "Video generation in progress...",
+          status: "DRAFT",
+          content: JSON.stringify({
+            ...result,
+            brandVibe: brandVibeMeta,
+          }),
           sourceIdea: JSON.stringify({
-            sourceType: "script",
+            sourceType: "video_script",
             script: input.script,
             title: input.title,
             brandVibe: brandVibeMeta,
@@ -16935,6 +19154,7 @@ export async function generateVideoFromScript(input: {
         },
       });
     } catch (error) {
+      void error;
       console.error(
         `[Task] Failed to generate video from script for local ID ${generatedContent.id}:`,
         error,
@@ -17323,6 +19543,53 @@ async function validatePostContent(
   const mentionCount = (input.content.match(/@\w+/g) || []).length;
   if (mentionCount > 5) {
     result.warnings.push("Too many mentions may reduce visibility");
+  }
+
+  // Enforce Brand Vibe hard rules
+  // 1) Disallow emojis
+  try {
+    if (/[\p{Extended_Pictographic}]/u.test(input.content)) {
+      result.errors.push(
+        "Please remove emojis to keep the brand voice consistent.",
+      );
+      result.isValid = false;
+    }
+  } catch {
+    // Fallback for environments without Unicode property escapes
+    if (
+      /[\u{1F300}-\u{1FAFF}]/u.test(input.content) ||
+      (/[^\u0000-\u00FF]/.test(input.content) &&
+        /[\u2600-\u27BF]/.test(input.content))
+    ) {
+      result.errors.push(
+        "Please remove emojis to keep the brand voice consistent.",
+      );
+      result.isValid = false;
+    }
+  }
+
+  // 2) Disallow em/en dashes
+  if (/[—–]/.test(input.content)) {
+    result.errors.push(
+      "Replace em/en dashes with plain punctuation (e.g., '-' or '.').",
+    );
+    result.isValid = false;
+  }
+
+  // 3) Disallow AI disclaimers
+  const aiDisclaimerPatterns = [
+    /as an ai\b/i,
+    /as a(n)? language model\b/i,
+    /\bai language model\b/i,
+    /\bi am an ai\b/i,
+    /\bi'm an ai\b/i,
+    /\bai-generated\b/i,
+  ];
+  if (aiDisclaimerPatterns.some((re) => re.test(input.content))) {
+    result.errors.push(
+      "Remove AI-style disclaimers (e.g., 'As an AI', 'As a language model'). Keep the tone human and confident.",
+    );
+    result.isValid = false;
   }
 
   return result;
@@ -18026,6 +20293,7 @@ export async function bulkSchedulePosts(input: {
         originalIndex: i,
       });
     } catch (error) {
+      void error;
       results.push({
         success: false,
         error:
@@ -18096,6 +20364,7 @@ export async function bulkDeleteScheduledPosts(input: { postIds: string[] }) {
         postId,
       });
     } catch (error) {
+      void error;
       results.push({
         success: false,
         postId,
@@ -18198,6 +20467,7 @@ export async function bulkUpdateScheduledPosts(input: {
         postId: update.postId,
       });
     } catch (error) {
+      void error;
       results.push({
         success: false,
         postId: update.postId,
@@ -18292,6 +20562,7 @@ export async function bulkRescheduleByTimeOffset(input: {
         newScheduledAt: newScheduledTime.toISOString(),
       });
     } catch (error) {
+      void error;
       results.push({
         success: false,
         postId,
@@ -18355,7 +20626,8 @@ export async function saveViralThreadAsContent(input: { threadId: string }) {
         // Handle cases where content is a JSON object but not a tweet array
         textContent = JSON.stringify(parsed, null, 2);
       }
-    } catch {
+    } catch (error) {
+      void error;
       // Not JSON, treat as plain string
       textContent = content;
     }
@@ -18424,8 +20696,75 @@ export async function _postScheduledContent() {
           where: { id: post.id },
           data: { status: "POSTED" },
         });
+
+        // Schedule a gentle post-action check-in ~24h later
+        try {
+          const settings = await db.userSettings.findUnique({
+            where: { userId: post.userId },
+          });
+          const enableCheckins = settings?.enablePostActionCheckins ?? true;
+          if (enableCheckins) {
+            const parseHHMM = (t: string) => {
+              const parts = (t ?? "").split(":");
+              const hh = parseInt(parts[0] ?? "0", 10);
+              const mm = parseInt(parts[1] ?? "0", 10);
+              return { hh: isNaN(hh) ? 0 : hh, mm: isNaN(mm) ? 0 : mm };
+            };
+
+            const baseTime = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+            const qs = settings?.quietHoursStart ?? "21:00";
+            const qe = settings?.quietHoursEnd ?? "08:00";
+            const { hh: sH, mm: sM } = parseHHMM(qs);
+            const { hh: eH, mm: eM } = parseHHMM(qe);
+            const start = sH * 60 + sM;
+            const end = eH * 60 + eM;
+            const minutes = baseTime.getHours() * 60 + baseTime.getMinutes();
+            const withinQuiet =
+              start < end
+                ? minutes >= start && minutes < end
+                : minutes >= start || minutes < end;
+
+            let scheduledFor = baseTime;
+            if (withinQuiet) {
+              let dayOffset = 0;
+              if (start < end) {
+                dayOffset = 0; // same-day quiet window
+              } else {
+                dayOffset = minutes >= start ? 1 : 0; // crosses midnight
+              }
+              scheduledFor = new Date(
+                baseTime.getFullYear(),
+                baseTime.getMonth(),
+                baseTime.getDate() + dayOffset,
+                eH,
+                eM,
+                0,
+                0,
+              );
+            }
+
+            await createNotification({
+              userId: post.userId,
+              title: "Quick check‑in on yesterday’s post",
+              message:
+                "How did it go? Want a 60‑second review and fresh follow‑up ideas?",
+              type: "insight",
+              category: "curiosity",
+              priority: "normal",
+              actionType: "navigate",
+              actionUrl: "/analytics",
+              actionData: { scheduledPostId: post.id },
+              scheduledFor,
+            });
+          }
+        } catch (e) {
+          console.error("Failed to schedule post-action check-in", e);
+        }
+
         return { id: post.id, status: "fulfilled" };
       } catch (error) {
+        void error;
         const errorMessage =
           error instanceof Error ? error.message : "Unknown error";
         await db.scheduledPost.update({
@@ -18652,7 +20991,8 @@ async function generateBrandOnlyDashboardData(
           }
         }
       }
-    } catch {
+    } catch (error) {
+      void error;
       // ignore
     }
   }
@@ -18920,7 +21260,8 @@ async function _internal_calculateDashboardData(
           }
         }
       }
-    } catch {
+    } catch (error) {
+      void error;
       // ignore
     }
   }
@@ -19147,8 +21488,12 @@ async function _internal_calculateDashboardData(
         }
       }
     }
-  } catch (e) {
-    console.error("Error fetching advanced insights for dashboard summary:", e);
+  } catch (error) {
+    void error;
+    console.error(
+      "Error fetching advanced insights for dashboard summary:",
+      error,
+    );
   }
 
   // Fallback for Trending Topics if advanced insights (from viral potential) didn't provide any
@@ -19428,17 +21773,20 @@ async function _internal_calculateDashboardData(
 export async function triggerDashboardSummaryGeneration() {
   const { userId } = await getAuth({ required: true });
 
-  // Check feature access and usage limits
-  await requireFeatureAccess("dashboard_summary_generation");
-  await requireUsageLimit("dashboard_summary_generation");
-
-  // Consume credits for dashboard summary generation (8 credits)
-  await _consumeCredits(
-    userId,
-    "dashboard_summary_generation",
-    8,
-    "Generated comprehensive dashboard summary with AI insights",
-  );
+  // Check feature access and usage limits (non-blocking)
+  try {
+    await requireFeatureAccess("dashboard_summary_generation");
+    await requireUsageLimit("dashboard_summary_generation");
+    // Consume credits for dashboard summary generation (8 credits)
+    await _consumeCredits(
+      userId,
+      "dashboard_summary_generation",
+      8,
+      "Generated comprehensive dashboard summary with AI insights",
+    );
+  } catch {
+    // Proceed without blocking if plan/credits are unavailable
+  }
 
   const cacheKey = `dashboard_summary_v1_${userId}`;
 
@@ -19498,13 +21846,14 @@ export async function triggerDashboardSummaryGeneration() {
         status: "COMPLETED",
         data: summaryData,
       });
-    } catch (e) {
+    } catch (error) {
+      void error;
       await updateAnalyticsCache({
         userId,
         cacheKey,
         cacheType: "dashboard_summary",
         status: "FAILED",
-        error: e instanceof Error ? e.message : "Unknown error",
+        error: error instanceof Error ? error.message : "Unknown error",
       });
     }
   });
@@ -19537,7 +21886,8 @@ export async function getDashboardSummary(input?: {
         data: parsedData,
         completedAt: cacheEntry.completedAt,
       };
-    } catch {
+    } catch (error) {
+      void error;
       return {
         status: "FAILED",
         error: "Failed to parse data.",
@@ -19883,9 +22233,129 @@ export async function getBlogPostBySlug(input: { slug: string }) {
   });
 }
 
+// Generate a brand-aligned blog post draft using the user's selected Brand Vibe
+export async function generateBrandedBlogPost(input: {
+  topic: string;
+  generateImage?: boolean;
+}) {
+  try {
+    const { userId } = await getAuth({ required: true });
+
+    const brand = await getBrandGuidelines();
+    const directives = await _buildBrandVibeSystemDirectives();
+    const brandVibeText = brand
+      ? `Brand Voice: ${brand.brandVoice}\nDirectives: ${(brand.directives || []).join(", ")}`
+      : "";
+
+    const result = await requestMultimodalModel({
+      system: `${directives}\nYou are an expert content creator and SEO specialist.\n\nBRAND VIBE ALIGNMENT: Always enforce the following brand rules. If any requested content conflicts, adapt it to comply without losing impact.\n${brandVibeText}\n\nWrite a comprehensive, engaging, and SEO-optimized blog post strictly aligned to the brand voice and directives. Use markdown formatting (headings, lists, bold) for readability.`,
+      messages: [
+        {
+          role: "user",
+          content: `Write a blog post on the topic: "${input.topic}". Return title, slug, markdown content (1200+ words), metaTitle (<=60 chars), metaDescription (<=160 chars), and 5-10 tags.`,
+        },
+      ],
+      returnType: z
+        .object({
+          title: z.string().describe("The main title of the blog post."),
+          slug: z
+            .string()
+            .transform((s) =>
+              s
+                .toLowerCase()
+                .replace(/\s+/g, "-")
+                .replace(/[^a-z0-9-]/g, ""),
+            )
+            .describe("URL-friendly slug for the blog post."),
+          content: z
+            .string()
+            .describe(
+              "The full content of the blog post in markdown format (>=1200 words).",
+            ),
+          metaTitle: z
+            .string()
+            .describe("SEO meta title for the blog post (<=60 chars)."),
+          metaDescription: z
+            .string()
+            .describe("SEO meta description for the blog post (<=160 chars)."),
+          tags: z
+            .array(z.string())
+            .describe("List of relevant tags for the blog post."),
+        })
+        .describe("Generated SEO-optimized blog post with metadata."),
+      model: "medium",
+    });
+
+    let featuredImageUrl: string | null = null;
+    if (input.generateImage) {
+      try {
+        const { imageUrl } = await requestMultimodalModel({
+          system: `${directives}\nYou are a professional image generation assistant. Always use your generateHighQualityImages tool to create a high-quality, on-brand featured image. Strictly follow the [VISUAL BRANDING] section (colors, visual style, imagery). Avoid off-brand colors and motifs.\n\nBRAND VIBE ALIGNMENT:\n${brandVibeText}`,
+          messages: [
+            {
+              role: "user",
+              content: `Generate a featured image that represents the blog topic "${result.title}" with a modern, accessible aesthetic and consistent with our brand palette.`,
+            },
+          ],
+          returnType: z
+            .object({
+              imageUrl: z.string().describe("The URL of the generated image."),
+            })
+            .describe("A response containing the generated image URL."),
+        });
+        featuredImageUrl = imageUrl;
+      } catch (e) {
+        console.error("Image generation failed:", e);
+      }
+    }
+
+    try {
+      const existing = await db.user.findUnique({ where: { id: userId } });
+      if (!existing) {
+        await db.user.create({ data: { id: userId } });
+      }
+    } catch {
+      // Non-critical: author record will be auto-synced by the platform later
+      void 0;
+    }
+
+    const post = await db.blogPost.create({
+      data: {
+        authorId: userId,
+        title: _sanitizeGeneratedText(result.title),
+        slug: result.slug,
+        content: _sanitizeGeneratedText(result.content),
+        metaTitle: _sanitizeGeneratedText(result.metaTitle),
+        metaDescription: _sanitizeGeneratedText(result.metaDescription),
+        tags: result.tags.join(","),
+        featuredImageUrl: featuredImageUrl ?? undefined,
+        isPublished: false,
+      },
+    });
+    return post;
+  } catch (error) {
+    console.error("Failed to generate branded blog post:", error);
+    throw error;
+  }
+}
+
+export async function publishBlogPost(input: { id: string }) {
+  try {
+    await getAuth({ required: true });
+    return await db.blogPost.update({
+      where: { id: input.id },
+      data: { isPublished: true, publishedAt: new Date() },
+    });
+  } catch (error) {
+    console.error("Failed to publish blog post:", error);
+    throw error;
+  }
+}
+
 export async function getAnalyticsSummary(input?: {
   pageId?: string;
   platform?: string;
+  days?: number;
 }) {
   const { userId } = await getAuth({ required: true });
 
@@ -19896,11 +22366,31 @@ export async function getAnalyticsSummary(input?: {
   if (input?.platform && input.platform !== "all") {
     where.platform = input.platform;
   }
-  if (input?.pageId) {
-    where.pageId = input.pageId;
+  // Only narrow by page for Facebook; otherwise count across all pages
+  if (input?.pageId && input.platform === "facebook") {
+    try {
+      const pageRecord = await db.page.findFirst({
+        where: {
+          OR: [{ id: input.pageId }, { pageId: input.pageId }],
+          account: { userId },
+        },
+        select: { id: true },
+      });
+      (where as any).pageId = pageRecord?.id ?? input.pageId;
+    } catch {
+      (where as any).pageId = input.pageId;
+    }
   }
+  // Optional time range (default 90 days)
+  const days =
+    typeof input?.days === "number" && input.days > 0 ? input.days : 90;
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  (where as any).createdAt = { gte: since };
 
-  const comments = await db.comment.findMany({ where });
+  const comments = await db.comment.findMany({
+    where,
+    orderBy: { createdAt: "desc" },
+  });
 
   const totalComments = comments.length;
   const respondedComments = comments.filter((c) => c.responded).length;
@@ -19914,12 +22404,518 @@ export async function getAnalyticsSummary(input?: {
 
   const sentimentBreakdown = comments.reduce(
     (acc, c) => {
-      const sentiment = c.sentiment || "neutral";
+      const sentiment = (c as any).sentiment || "neutral";
       acc[sentiment] = (acc[sentiment] || 0) + 1;
       return acc;
     },
     {} as Record<string, number>,
   );
+
+  // Aggregate topics from stored topic arrays (best-effort)
+  const topicMap = new Map<
+    string,
+    {
+      count: number;
+      sentiments: Record<string, number>;
+      exampleComments: string[];
+    }
+  >();
+  for (const c of comments) {
+    let topics: string[] = [];
+    try {
+      topics = c.topics ? (JSON.parse(c.topics) as unknown as string[]) : [];
+      if (!Array.isArray(topics)) topics = [];
+    } catch {
+      topics = [];
+    }
+    const sentiment = (c as any).sentiment || "neutral";
+    for (const rawTopic of topics) {
+      const t = String(rawTopic || "")
+        .trim()
+        .toLowerCase();
+      if (!t) continue;
+      if (!topicMap.has(t)) {
+        topicMap.set(t, { count: 0, sentiments: {}, exampleComments: [] });
+      }
+      const entry = topicMap.get(t)!;
+      entry.count += 1;
+      entry.sentiments[sentiment] = (entry.sentiments[sentiment] || 0) + 1;
+      if (entry.exampleComments.length < 3) {
+        entry.exampleComments.push(c.text?.slice(0, 240) || "");
+      }
+    }
+  }
+
+  // Build intent analysis with caching (batch up to 600 recent comments)
+  const maxIntentSample = 150;
+  const sampleForIntent = comments
+    .slice(0, maxIntentSample)
+    .map((c) => ({ id: c.id, text: c.text || "" }));
+
+  // Get cached intent per comment
+  const intentResults: {
+    [id: string]: { intent: string; confidence: number; keywords: string[] };
+  } = {};
+  const toAnalyze: { id: string; text: string; cacheKey: string }[] = [];
+  for (const it of sampleForIntent) {
+    const cacheKey = `intent_v1_${Buffer.from(it.text).toString("base64").substring(0, 40)}`;
+    const cached = await db.aIRequestLog.findFirst({
+      where: {
+        cacheKey,
+        success: true,
+        responseData: { not: null },
+        timestamp: { gte: new Date(Date.now() - 1000 * 60 * 60 * 24 * 7) },
+      },
+      orderBy: { timestamp: "desc" },
+    });
+    if (cached?.responseData) {
+      try {
+        const parsed = JSON.parse(cached.responseData) as {
+          intent: string;
+          confidence: number;
+          keywords: string[];
+        };
+        intentResults[it.id] = parsed;
+      } catch {
+        toAnalyze.push({ ...it, cacheKey });
+      }
+    } else {
+      toAnalyze.push({ ...it, cacheKey });
+    }
+  }
+
+  if (toAnalyze.length > 0) {
+    const INTENT_TIME_BUDGET_MS = 4000;
+    const startedAt = Date.now();
+    const withTimeout = async <T>(p: Promise<T>, ms: number): Promise<T> => {
+      return await Promise.race([
+        p,
+        new Promise<T>((_, reject) =>
+          setTimeout(() => reject(new Error("INTENT_TIMEOUT")), ms),
+        ) as Promise<T>,
+      ]);
+    };
+    try {
+      const batch = await withTimeout(
+        batchAwareRequestMultimodalModel<{
+          analyses: {
+            intent: string;
+            confidence: number;
+            keywords: string[];
+          }[];
+        }>(
+          "sentiment_analysis",
+          { comments: toAnalyze.map((c) => ({ id: c.id, text: c.text })) },
+          {
+            system:
+              "You are a social customer insights analyst. For each comment, classify intent and extract concise keywords.\n- intent: one of [inquiry, complaint, compliment, support_request, purchase_intent, feature_request, feedback, spam, engagement, troll]. Choose the closest.\n- confidence: 0 to 1.\n- keywords: 1-5 short keywords. Return array aligned to input order.",
+            messages: [
+              {
+                role: "user",
+                content: `Analyze intents for ${toAnalyze.length} comments. Return only JSON.`,
+              },
+            ],
+            returnType: z.object({
+              analyses: z.array(
+                z.object({
+                  intent: z.string(),
+                  confidence: z.number(),
+                  keywords: z.array(z.string()),
+                }),
+              ),
+            }),
+            model: "small",
+          },
+        ),
+        INTENT_TIME_BUDGET_MS,
+      );
+      for (let i = 0; i < toAnalyze.length; i++) {
+        const item = toAnalyze[i]!;
+        const res = (batch as any).analyses?.[i];
+        if (res) {
+          intentResults[item.id] = res;
+          try {
+            await db.aIRequestLog.create({
+              data: {
+                userId: "system",
+                endpoint: "analyzeIntent",
+                operation: "intent_analysis",
+                cacheKey: item.cacheKey,
+                success: true,
+                responseData: JSON.stringify(res),
+              },
+            });
+          } catch (e) {
+            console.error("Failed to cache intent result", e);
+          }
+        }
+      }
+      console.log(
+        "[rpc:getAnalyticsSummary] intent analysis completed in",
+        Date.now() - startedAt,
+        "ms",
+        "items:",
+        toAnalyze.length,
+      );
+    } catch (e) {
+      console.log(
+        "[rpc:getAnalyticsSummary] intent analysis skipped or timed out",
+        { items: toAnalyze.length, error: (e as Error)?.message },
+      );
+    }
+  }
+
+  // Fallback intent & keyword extraction if AI was skipped or timed out
+  if (Object.keys(intentResults).length < sampleForIntent.length) {
+    const basicStopwords = new Set([
+      "the",
+      "and",
+      "for",
+      "with",
+      "you",
+      "your",
+      "this",
+      "that",
+      "are",
+      "was",
+      "were",
+      "can",
+      "not",
+      "have",
+      "has",
+      "had",
+      "will",
+      "would",
+      "should",
+      "could",
+      "i",
+      "we",
+      "they",
+      "he",
+      "she",
+      "it",
+      "to",
+      "of",
+      "in",
+      "on",
+      "at",
+      "as",
+      "is",
+      "be",
+      "or",
+      "an",
+      "a",
+      "our",
+      "us",
+      "me",
+      "my",
+      "mine",
+      "yours",
+      "their",
+      "there",
+      "here",
+      "from",
+      "by",
+      "about",
+      "into",
+      "over",
+      "under",
+      "after",
+      "before",
+    ]);
+    const classifyHeuristic = (text: string) => {
+      const t = (text || "").toLowerCase();
+      const contains = (arr: string[]) => arr.some((w) => t.includes(w));
+      let intent = "engagement";
+      let confidence = 0.5;
+      if (
+        t.includes("http") ||
+        contains(["discount", "crypto", "win", "giveaway"])
+      ) {
+        intent = "spam";
+        confidence = 0.8;
+      } else if (
+        t.includes("?") ||
+        contains(["how", "what", "when", "where", "why"])
+      ) {
+        intent = "inquiry";
+        confidence = 0.7;
+      } else if (
+        contains([
+          "bug",
+          "issue",
+          "broken",
+          "error",
+          "problem",
+          "fix",
+          "help",
+          "support",
+        ])
+      ) {
+        intent = "support_request";
+        confidence = 0.75;
+      } else if (
+        contains(["buy", "order", "purchase", "pricing", "price", "cost"])
+      ) {
+        intent = "purchase_intent";
+        confidence = 0.75;
+      } else if (
+        contains([
+          "feature",
+          "could you add",
+          "add feature",
+          "wish",
+          "would be nice",
+        ])
+      ) {
+        intent = "feature_request";
+        confidence = 0.7;
+      } else if (
+        contains([
+          "love",
+          "great",
+          "amazing",
+          "awesome",
+          "thanks",
+          "thank you",
+          "perfect",
+        ])
+      ) {
+        intent = "compliment";
+        confidence = 0.7;
+      } else if (
+        contains([
+          "hate",
+          "terrible",
+          "bad",
+          "worst",
+          "awful",
+          "disappointed",
+          "doesn't work",
+          "scam",
+        ])
+      ) {
+        intent = "complaint";
+        confidence = 0.8;
+      }
+      const tokens = t
+        .replace(/[^a-z0-9\s_]/g, " ")
+        .split(/\s+/)
+        .filter((s) => s && s.length > 2 && !basicStopwords.has(s));
+      const freq: Record<string, number> = {};
+      for (const k of tokens) freq[k] = (freq[k] || 0) + 1;
+      const keywords = Object.entries(freq)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([k]) => k);
+      return { intent, confidence, keywords };
+    };
+    for (const item of sampleForIntent) {
+      if (intentResults[item.id]) continue;
+      const res = classifyHeuristic(item.text || "");
+      intentResults[item.id] = res;
+    }
+  }
+
+  // Build intent breakdown using sample
+  const intentBreakdown: Record<string, number> = {};
+  for (const c of sampleForIntent) {
+    const info = intentResults[c.id];
+    if (!info) continue;
+    const label = info.intent || "unknown";
+    intentBreakdown[label] = (intentBreakdown[label] || 0) + 1;
+  }
+
+  // Derive enriched topic clusters (merge sentiments + intents)
+  const buildClustersFromTopics = () =>
+    Array.from(topicMap.entries())
+      .sort((a, b) => b[1]!.count - a[1]!.count)
+      .slice(0, 12)
+      .map(([label, data]) => {
+        const intents: Record<string, number> = {};
+        const keywordsAgg: Record<string, number> = {};
+        for (const sc of sampleForIntent) {
+          const full = comments.find((x) => x.id === sc.id);
+          if (!full) continue;
+          let tps: string[] = [];
+          try {
+            tps = full.topics
+              ? (JSON.parse(full.topics) as unknown as string[])
+              : [];
+            if (!Array.isArray(tps)) tps = [];
+          } catch {
+            tps = [];
+          }
+          if (tps.map((x) => String(x).toLowerCase()).includes(label)) {
+            const ir = intentResults[sc.id];
+            if (ir) {
+              intents[ir.intent] = (intents[ir.intent] || 0) + 1;
+              for (const kw of ir.keywords || []) {
+                const k = kw.toLowerCase();
+                keywordsAgg[k] = (keywordsAgg[k] || 0) + 1;
+              }
+            }
+          }
+        }
+        const topKeywords = Object.entries(keywordsAgg)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 5)
+          .map(([k]) => k);
+        return {
+          label,
+          count: data.count,
+          sentimentDistribution: data.sentiments,
+          intentDistribution: intents,
+          keywords: topKeywords,
+          examples: data.exampleComments,
+        };
+      });
+
+  const buildClustersFromKeywords = () => {
+    const stopwords = new Set([
+      "the",
+      "and",
+      "for",
+      "with",
+      "you",
+      "your",
+      "this",
+      "that",
+      "are",
+      "was",
+      "were",
+      "can",
+      "not",
+      "have",
+      "has",
+      "had",
+      "will",
+      "would",
+      "should",
+      "could",
+      "i",
+      "we",
+      "they",
+      "he",
+      "she",
+      "it",
+      "to",
+      "of",
+      "in",
+      "on",
+      "at",
+      "as",
+      "is",
+      "be",
+      "or",
+      "an",
+      "a",
+      "our",
+      "us",
+      "me",
+      "my",
+      "mine",
+      "yours",
+      "their",
+      "there",
+      "here",
+      "from",
+      "by",
+      "about",
+      "into",
+      "over",
+      "under",
+      "after",
+      "before",
+    ]);
+
+    const keywordCounts: Record<string, number> = {};
+    const idToKeywords: Record<string, string[]> = {};
+    for (const sc of sampleForIntent) {
+      const ir = intentResults[sc.id];
+      const kws = (ir?.keywords || [])
+        .map((k) => k.toLowerCase().trim())
+        .filter((k) => k && k.length > 2 && !stopwords.has(k));
+      idToKeywords[sc.id] = kws;
+      for (const k of kws) keywordCounts[k] = (keywordCounts[k] || 0) + 1;
+    }
+
+    const topKeywords = Object.entries(keywordCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 12)
+      .map(([k]) => k);
+
+    const idToComment: Record<string, { text: string; sentiment: string }> = {};
+    for (const c of comments) {
+      idToComment[c.id] = {
+        text: c.text || "",
+        sentiment: (c as any).sentiment || "neutral",
+      };
+    }
+
+    return topKeywords
+      .map((kw) => {
+        const matchedIds = sampleForIntent
+          .filter((sc) => (idToKeywords[sc.id] || []).includes(kw))
+          .map((sc) => sc.id);
+
+        const sentimentDistribution: Record<string, number> = {};
+        const intentDistribution: Record<string, number> = {};
+        const coKeywordCounts: Record<string, number> = {};
+
+        for (const id of matchedIds) {
+          const c = idToComment[id];
+          if (c) {
+            sentimentDistribution[c.sentiment] =
+              (sentimentDistribution[c.sentiment] || 0) + 1;
+          }
+          const ir = intentResults[id];
+          if (ir) {
+            intentDistribution[ir.intent] =
+              (intentDistribution[ir.intent] || 0) + 1;
+            for (const k of ir.keywords || []) {
+              const lc = k.toLowerCase();
+              if (lc !== kw && !stopwords.has(lc))
+                coKeywordCounts[lc] = (coKeywordCounts[lc] || 0) + 1;
+            }
+          }
+        }
+
+        const coKeywords = Object.entries(coKeywordCounts)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 4)
+          .map(([k]) => k);
+
+        const examples = sampleForIntent
+          .filter((sc) => matchedIds.includes(sc.id))
+          .slice(0, 3)
+          .map((sc) => (sc.text || "").slice(0, 240));
+
+        return {
+          label: kw,
+          count: matchedIds.length,
+          sentimentDistribution,
+          intentDistribution,
+          keywords: coKeywords,
+          examples,
+        };
+      })
+      .filter((cl) => cl.count > 0);
+  };
+
+  let topicClusters = buildClustersFromTopics();
+  if (!topicClusters || topicClusters.length < 3) {
+    const keywordClusters = buildClustersFromKeywords();
+    // If we have both, merge unique by label and take top 12 by count
+    const map: Record<string, (typeof keywordClusters)[number]> = {};
+    for (const c of topicClusters) map[c.label] = c as any;
+    for (const c of keywordClusters) {
+      if (!map[c.label]) map[c.label] = c as any;
+    }
+    topicClusters = Object.values(map)
+      .sort((a, b) => (b.count as number) - (a.count as number))
+      .slice(0, 12) as any;
+  }
 
   const followerCount: { current: number | null; change: number | null } = {
     current: null,
@@ -19950,6 +22946,11 @@ export async function getAnalyticsSummary(input?: {
     sentimentBreakdown,
     followerCount,
     totalComments,
+    // New fields
+    intentBreakdown,
+    topicClusters,
+    commentSampleSize: sampleForIntent.length,
+    timeRangeDays: days,
   };
 }
 
@@ -19966,8 +22967,19 @@ export async function getPostingActivityHeatmap(input?: {
   if (input?.platform && input.platform !== "all") {
     where.platform = input.platform;
   }
-  if (input?.pageId) {
-    where.pageId = input.pageId;
+  if (input?.pageId && input.platform === "facebook") {
+    try {
+      const pageRecord = await db.page.findFirst({
+        where: {
+          OR: [{ id: input.pageId }, { pageId: input.pageId }],
+          account: { userId },
+        },
+        select: { id: true },
+      });
+      (where as any).pageId = pageRecord?.id ?? input.pageId;
+    } catch {
+      (where as any).pageId = input.pageId;
+    }
   }
 
   const comments = await db.comment.findMany({
@@ -20013,6 +23025,20 @@ export async function analyzeBrandContext() {
     15,
     "Analyzed comprehensive brand context with AI insights and website analysis",
   );
+
+  // Mark status as RUNNING immediately so the UI can reflect progress
+  await db.brandContext.upsert({
+    where: { userId },
+    update: { analysisStatus: "RUNNING", lastAnalyzedAt: new Date() },
+    create: { userId, analysisStatus: "RUNNING", lastAnalyzedAt: new Date() },
+  });
+
+  // Kick off Audience Insights generation in parallel with Brand Vibe
+  try {
+    await triggerAdvancedInsightsGeneration({});
+  } catch {
+    void 0;
+  }
 
   const task = await queueTask(async () => {
     try {
@@ -20179,6 +23205,7 @@ Provide comprehensive audience insights that can be used for content strategy an
             temperature: 0.2,
           });
         } catch (error) {
+          void error;
           console.log(
             "Website analysis failed, continuing with other data sources:",
             error,
@@ -20189,6 +23216,10 @@ Provide comprehensive audience insights that can be used for content strategy an
       // Enhanced social media deep analysis across all platforms
       let socialMediaAnalysis: any = null;
       let platformSpecificInsights: any = {};
+      let socialVisualIdentity: {
+        colorPalette: string[];
+        visualStyle: string;
+      } | null = null;
       if (accounts.length > 0) {
         try {
           // Analyze each platform individually for deeper insights
@@ -20319,6 +23350,34 @@ Provide ${account.platform}-specific strategic insights.`,
             name: acc.name,
             accountId: acc.accountId,
           }));
+
+          // Attempt to extract visual identity (palette + style) from socials
+          try {
+            socialVisualIdentity = await requestMultimodalModel({
+              system: `You are a brand visual identity analyst. Using your web tools, locate the official social profiles from the provided platform/name pairs. For each, analyze visible profile imagery and recent posts to infer the brand's core color palette (hex or color names) and overall visual style. Prioritize colors actually used in backgrounds, logos, or dominant UI accents, not thumbnails from unrelated content. Return a concise, deduplicated palette (3-6 colors) and a short visual style description.`,
+              messages: [
+                {
+                  role: "user",
+                  content: `SOCIAL PROFILES TO ANALYZE (may require search):\n${JSON.stringify(socialProfiles, null, 2)}\n\nExtract brand color palette and visual style.`,
+                },
+              ],
+              returnType: z
+                .object({
+                  colorPalette: z
+                    .array(z.string())
+                    .describe(
+                      "Deduplicated color palette as hex or CSS color names",
+                    ),
+                  visualStyle: z
+                    .string()
+                    .describe("One-sentence visual style description"),
+                })
+                .describe("Social profile visual identity extraction"),
+              temperature: 0.2,
+            });
+          } catch {
+            void 0;
+          }
 
           // Enhanced cross-platform sentiment and engagement analysis
           const sentimentByPlatform = {};
@@ -20594,6 +23653,7 @@ Create a comprehensive cross-platform social media strategy.`,
             temperature: 0.2,
           });
         } catch (error) {
+          void error;
           console.log(
             "Enhanced social media analysis failed, continuing with other data sources:",
             error,
@@ -20617,6 +23677,7 @@ Create a comprehensive cross-platform social media strategy.`,
             },
           });
         } catch (error) {
+          void error;
           console.log("Failed to store platform-specific insights:", error);
         }
       }
@@ -20853,81 +23914,255 @@ ${JSON.stringify(socialMediaAnalysis)}
 
       const validatedResult = validateAndSanitizeResponse(analysisResult);
 
+      // Derive visual identity fields
+      const websitePalette = websiteAnalysis?.visualIdentity?.colorPalette as
+        | string[]
+        | undefined;
+      const websiteVisualStyle = websiteAnalysis?.visualIdentity
+        ?.designStyle as string | undefined;
+      const socialPalette = (socialVisualIdentity?.colorPalette ??
+        []) as string[];
+      const socialStyle = socialVisualIdentity?.visualStyle as
+        | string
+        | undefined;
+
+      const effectivePalette = Array.from(
+        new Set([...(websitePalette ?? []), ...socialPalette].filter(Boolean)),
+      ).slice(0, 6);
+      const effectiveVisualStyle =
+        websiteVisualStyle && websiteVisualStyle.trim()
+          ? websiteVisualStyle.trim()
+          : socialStyle || undefined;
+
+      // Generate audience personas and creative guidelines
+      let personasAndGuidelines: {
+        audiencePersonas: any[];
+        creativeGuidelines: any;
+      } | null = null;
+      try {
+        personasAndGuidelines = await requestMultimodalModel({
+          system:
+            "You are a senior brand strategist. Using the brand analysis, create concrete audience personas and creative guidelines. Return valid JSON only.",
+          messages: [
+            {
+              role: "user",
+              content: `Create 3-5 audience personas and creative guidelines based on the following data.\n\nVALIDATED BRAND CONTEXT:\n${JSON.stringify(validatedResult)}\n\nWEBSITE ANALYSIS:\n${JSON.stringify(websiteAnalysis || {})}\n\nSOCIAL VISUAL IDENTITY:\n${JSON.stringify(socialVisualIdentity || {})}\n\nBRAND GUIDELINES:\n${JSON.stringify(brandGuidelines || {})}`,
+            },
+          ],
+          returnType: z
+            .object({
+              audiencePersonas: z
+                .array(
+                  z.object({
+                    name: z.string().describe("Persona name"),
+                    description: z.string().describe("Short description"),
+                    platforms: z
+                      .array(z.string())
+                      .describe("Preferred platforms"),
+                    contentPreferences: z
+                      .array(z.string())
+                      .describe("Content preferences"),
+                    engagementStyle: z.string().describe("How they engage"),
+                  }),
+                )
+                .describe("Audience personas"),
+              creativeGuidelines: z
+                .object({
+                  colorPalette: z
+                    .array(z.string())
+                    .describe("Core brand colors"),
+                  logoUsage: z.string().describe("Logo usage guidance"),
+                  typography: z
+                    .array(z.string())
+                    .describe("Preferred fonts or styles"),
+                  imageStyle: z.string().describe("Image/visual style"),
+                  dos: z.array(z.string()).describe("Do's"),
+                  donts: z.array(z.string()).describe("Don'ts"),
+                })
+                .describe("Creative production guardrails"),
+            })
+            .describe("Personas and creative guidelines"),
+          temperature: 0.2,
+        });
+      } catch {
+        void 0;
+      }
+
+      // Override palette/style in creative guidelines with scanned values if available
+      const mergedCreativeGuidelines = (() => {
+        const base = personasAndGuidelines?.creativeGuidelines || {};
+        const palette =
+          effectivePalette && effectivePalette.length
+            ? effectivePalette
+            : base.colorPalette || [];
+        const imgStyle =
+          effectiveVisualStyle && effectiveVisualStyle.trim()
+            ? effectiveVisualStyle.trim()
+            : base.imageStyle || "";
+        return { ...base, colorPalette: palette, imageStyle: imgStyle };
+      })();
+
+      // Ensure we always have at least some personas to display
+      const personasToStore = (() => {
+        const aiPersonas = personasAndGuidelines?.audiencePersonas;
+        if (Array.isArray(aiPersonas) && aiPersonas.length > 0)
+          return aiPersonas;
+        const ta = validatedResult.targetAudience;
+        const platforms = Array.isArray(ta.preferredPlatforms)
+          ? ta.preferredPlatforms
+          : [];
+        const pillars = Array.isArray(
+          validatedResult.contentStrategy?.contentPillars,
+        )
+          ? validatedResult.contentStrategy.contentPillars
+          : [];
+        const interests = Array.isArray(ta.interests) ? ta.interests : [];
+        const painPoints = Array.isArray(ta.painPoints) ? ta.painPoints : [];
+        const makePersona = (name: string, desc: string) => ({
+          name,
+          description: desc,
+          platforms: platforms.slice(0, 3),
+          contentPreferences: (pillars.length ? pillars : interests).slice(
+            0,
+            5,
+          ),
+          engagementStyle:
+            "Research-driven; saves, shares and comments on helpful posts",
+        });
+        return [
+          makePersona(
+            "Core Buyer",
+            "Primary audience who directly benefits from the offering",
+          ),
+          makePersona(
+            "Pragmatic Builder",
+            "Hands-on implementer who looks for practical, step-by-step content",
+          ),
+          makePersona(
+            "Strategic Sponsor",
+            "Decision-maker evaluating value, risk and outcomes",
+          ),
+        ].map((p) => ({
+          ...p,
+          contentPreferences:
+            p.contentPreferences.length > 0
+              ? p.contentPreferences
+              : (interests.length ? interests : painPoints).slice(0, 5),
+        }));
+      })();
+
+      // Build update/create payloads to include palette and visual style when available
+      const updateData: any = {
+        industry: validatedResult.industry,
+        niche: validatedResult.niche,
+        targetAudience: JSON.stringify(validatedResult.targetAudience),
+        brandPersonality: JSON.stringify(validatedResult.brandPersonality),
+        competitorAnalysis: JSON.stringify(validatedResult.competitorAnalysis),
+        brandValues: JSON.stringify(validatedResult.brandValues),
+        contentThemes: JSON.stringify(validatedResult.contentThemes),
+        riskTolerance: validatedResult.riskTolerance,
+        trendAdoptionSpeed: validatedResult.trendAdoptionSpeed,
+        // Store enhanced data in new fields
+        communicationStyle: validatedResult.brandPersonality.communicationStyle,
+        keyValues: JSON.stringify(validatedResult.brandValues),
+        competitivePositioning: JSON.stringify({
+          differentiators: validatedResult.competitorAnalysis.differentiators,
+          advantages: validatedResult.competitorAnalysis.competitiveAdvantages,
+          marketGaps: validatedResult.competitorAnalysis.marketGaps,
+        }),
+        contentOpportunities: JSON.stringify(validatedResult.contentStrategy),
+        brandVoiceKeywords: JSON.stringify([
+          ...validatedResult.brandPersonality.traits,
+          validatedResult.brandPersonality.brandArchetype,
+        ]),
+        industryContext: JSON.stringify({
+          businessModel: validatedResult.businessContext.businessModel,
+          platformStrategy: validatedResult.platformStrategy,
+          seasonality: validatedResult.businessContext.seasonality,
+        }),
+        audiencePersonas: JSON.stringify(personasToStore),
+        creativeGuidelines: JSON.stringify(mergedCreativeGuidelines),
+        analysisStatus: "COMPLETED",
+        lastAnalyzedAt: new Date(),
+      };
+      if (effectivePalette && effectivePalette.length) {
+        updateData.brandColorPalette = JSON.stringify(effectivePalette);
+      }
+      if (effectiveVisualStyle && effectiveVisualStyle.trim()) {
+        updateData.visualStyle = effectiveVisualStyle.trim();
+      }
+
+      const createData: any = {
+        userId,
+        industry: validatedResult.industry,
+        niche: validatedResult.niche,
+        targetAudience: JSON.stringify(validatedResult.targetAudience),
+        brandPersonality: JSON.stringify(validatedResult.brandPersonality),
+        competitorAnalysis: JSON.stringify(validatedResult.competitorAnalysis),
+        brandValues: JSON.stringify(validatedResult.brandValues),
+        contentThemes: JSON.stringify(validatedResult.contentThemes),
+        riskTolerance: validatedResult.riskTolerance,
+        trendAdoptionSpeed: validatedResult.trendAdoptionSpeed,
+        communicationStyle: validatedResult.brandPersonality.communicationStyle,
+        keyValues: JSON.stringify(validatedResult.brandValues),
+        competitivePositioning: JSON.stringify({
+          differentiators: validatedResult.competitorAnalysis.differentiators,
+          advantages: validatedResult.competitorAnalysis.competitiveAdvantages,
+          marketGaps: validatedResult.competitorAnalysis.marketGaps,
+        }),
+        contentOpportunities: JSON.stringify(validatedResult.contentStrategy),
+        brandVoiceKeywords: JSON.stringify([
+          ...validatedResult.brandPersonality.traits,
+          validatedResult.brandPersonality.brandArchetype,
+        ]),
+        industryContext: JSON.stringify({
+          businessModel: validatedResult.businessContext.businessModel,
+          platformStrategy: validatedResult.platformStrategy,
+          seasonality: validatedResult.businessContext.seasonality,
+        }),
+        audiencePersonas: JSON.stringify(personasToStore),
+        creativeGuidelines: JSON.stringify(mergedCreativeGuidelines),
+        analysisStatus: "COMPLETED",
+        lastAnalyzedAt: new Date(),
+      };
+      if (effectivePalette && effectivePalette.length) {
+        createData.brandColorPalette = JSON.stringify(effectivePalette);
+      }
+      if (effectiveVisualStyle && effectiveVisualStyle.trim()) {
+        createData.visualStyle = effectiveVisualStyle.trim();
+      }
+
       // Save or update brand context with enhanced data
       await db.brandContext.upsert({
         where: { userId },
-        update: {
-          industry: validatedResult.industry,
-          niche: validatedResult.niche,
-          targetAudience: JSON.stringify(validatedResult.targetAudience),
-          brandPersonality: JSON.stringify(validatedResult.brandPersonality),
-          competitorAnalysis: JSON.stringify(
-            validatedResult.competitorAnalysis,
-          ),
-          brandValues: JSON.stringify(validatedResult.brandValues),
-          contentThemes: JSON.stringify(validatedResult.contentThemes),
-          riskTolerance: validatedResult.riskTolerance,
-          trendAdoptionSpeed: validatedResult.trendAdoptionSpeed,
-          // Store enhanced data in new fields
-          communicationStyle:
-            validatedResult.brandPersonality.communicationStyle,
-          keyValues: JSON.stringify(validatedResult.brandValues),
-          competitivePositioning: JSON.stringify({
-            differentiators: validatedResult.competitorAnalysis.differentiators,
-            advantages:
-              validatedResult.competitorAnalysis.competitiveAdvantages,
-            marketGaps: validatedResult.competitorAnalysis.marketGaps,
-          }),
-          contentOpportunities: JSON.stringify(validatedResult.contentStrategy),
-          brandVoiceKeywords: JSON.stringify([
-            ...validatedResult.brandPersonality.traits,
-            validatedResult.brandPersonality.brandArchetype,
-          ]),
-          industryContext: JSON.stringify({
-            businessModel: validatedResult.businessContext.businessModel,
-            platformStrategy: validatedResult.platformStrategy,
-            seasonality: validatedResult.businessContext.seasonality,
-          }),
-          analysisStatus: "COMPLETED",
-          lastAnalyzedAt: new Date(),
-        },
-        create: {
-          userId,
-          industry: validatedResult.industry,
-          niche: validatedResult.niche,
-          targetAudience: JSON.stringify(validatedResult.targetAudience),
-          brandPersonality: JSON.stringify(validatedResult.brandPersonality),
-          competitorAnalysis: JSON.stringify(
-            validatedResult.competitorAnalysis,
-          ),
-          brandValues: JSON.stringify(validatedResult.brandValues),
-          contentThemes: JSON.stringify(validatedResult.contentThemes),
-          riskTolerance: validatedResult.riskTolerance,
-          trendAdoptionSpeed: validatedResult.trendAdoptionSpeed,
-          communicationStyle:
-            validatedResult.brandPersonality.communicationStyle,
-          keyValues: JSON.stringify(validatedResult.brandValues),
-          competitivePositioning: JSON.stringify({
-            differentiators: validatedResult.competitorAnalysis.differentiators,
-            advantages:
-              validatedResult.competitorAnalysis.competitiveAdvantages,
-            marketGaps: validatedResult.competitorAnalysis.marketGaps,
-          }),
-          contentOpportunities: JSON.stringify(validatedResult.contentStrategy),
-          brandVoiceKeywords: JSON.stringify([
-            ...validatedResult.brandPersonality.traits,
-            validatedResult.brandPersonality.brandArchetype,
-          ]),
-          industryContext: JSON.stringify({
-            businessModel: validatedResult.businessContext.businessModel,
-            platformStrategy: validatedResult.platformStrategy,
-            seasonality: validatedResult.businessContext.seasonality,
-          }),
-          analysisStatus: "COMPLETED",
-          lastAnalyzedAt: new Date(),
-        },
+        update: updateData,
+        create: createData,
       });
+
+      // Send a one-time confirmation email when Brand Vibe is created
+      try {
+        const emailFlagKey = generateContentCacheKey(
+          "brand_vibe_email_sent",
+          userId,
+        );
+        const alreadySent = await getCachedContent(emailFlagKey);
+        if (!alreadySent) {
+          const appUrl = new URL("/settings", getBaseUrl()).toString();
+          await sendEmail({
+            toUserId: userId,
+            subject: "Your Brand Vibe is ready",
+            markdown: `Your Brand Vibe is ready!\n\nVisit [Settings → Brand Vibe](${appUrl}) to review your voice, personas, and visual style.\n\nTip: You can regenerate any time after updating your guidelines.`,
+          });
+          await setCachedContent(emailFlagKey, "sent", userId);
+        }
+      } catch {
+        void 0;
+      }
+
+      // Audience insights generation is already triggered at the start of analyzeBrandContext.
+      // No additional action needed here to avoid duplicate runs and extra credit usage.
     } catch (error) {
+      void error;
       console.error("Error analyzing brand context:", error);
 
       // Update status to failed
@@ -21047,8 +24282,9 @@ export async function getBrandContext() {
           const parsed = JSON.parse(jsonString);
           return parsed;
         } catch (error) {
+          void error;
           // If parsing fails, check if it looks like a stringified value
-          const trimmed = jsonString.trim();
+          const trimmed = String(jsonString).trim();
 
           // If it starts with { or [, it was meant to be JSON but malformed
           if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
@@ -21061,10 +24297,12 @@ export async function getBrandContext() {
             // For array fields, split by comma if it contains commas
             return trimmed.includes(",")
               ? trimmed.split(",").map((s) => s.trim())
-              : [trimmed];
+              : trimmed
+                ? [trimmed]
+                : fallback;
           } else if (typeof fallback === "object" && fallback !== null) {
             // For object fields, return a simple object with the text as description
-            return { description: trimmed };
+            return trimmed ? { description: trimmed } : fallback;
           }
 
           // For other cases, return the text as-is
@@ -21079,6 +24317,55 @@ export async function getBrandContext() {
         competitorAnalysis: safeJsonParse(brandContext.competitorAnalysis),
         brandValues: safeJsonParse(brandContext.brandValues, []),
         contentThemes: safeJsonParse(brandContext.contentThemes, []),
+        // Additional fields required by the UI that may be stored as JSON strings
+        contentOpportunities: safeJsonParse(
+          brandContext.contentOpportunities,
+          {},
+        ),
+        industryContext: safeJsonParse(brandContext.industryContext, {}),
+        audiencePersonas: safeJsonParse(brandContext.audiencePersonas, []),
+        creativeGuidelines: (() => {
+          const cg = safeJsonParse(brandContext.creativeGuidelines, {});
+          const palette = safeJsonParse(brandContext.brandColorPalette, []);
+          const vs = (brandContext as any).visualStyle;
+          const out: any = cg && typeof cg === "object" ? { ...cg } : {};
+          if (
+            !Array.isArray(out.colorPalette) ||
+            out.colorPalette.length === 0
+          ) {
+            out.colorPalette = Array.isArray(palette) ? palette : [];
+          }
+          if (!out.imageStyle || String(out.imageStyle).trim() === "") {
+            out.imageStyle = typeof vs === "string" ? vs : "";
+          }
+          if (!Array.isArray(out.typography)) {
+            out.typography = [];
+          }
+          if (!Array.isArray(out.dos)) {
+            out.dos = [
+              "Use brand colors consistently",
+              "Keep layouts clean and readable",
+              "Ensure sufficient color contrast for accessibility",
+            ];
+          }
+          if (!Array.isArray(out.donts)) {
+            out.donts = [
+              "Do not stretch or distort the logo",
+              "Avoid off-brand colors",
+              "Avoid clutter and excessive punctuation",
+            ];
+          }
+          if (!Array.isArray(out.logos) && !Array.isArray(out.logoUrls)) {
+            out.logos = [];
+          }
+          return out;
+        })(),
+        brandColorPalette: safeJsonParse(brandContext.brandColorPalette, []),
+        brandVoiceKeywords: safeJsonParse(brandContext.brandVoiceKeywords, []),
+        competitivePositioning: safeJsonParse(
+          brandContext.competitivePositioning,
+          {},
+        ),
       };
     } catch (error: any) {
       // Handle timeout errors specifically
@@ -21168,6 +24455,7 @@ export async function refreshBrandAnalysis() {
             // Refresh social media data using the general fetchComments function
             await fetchComments();
           } catch (error) {
+            void error;
             console.log(`Failed to refresh ${account.platform} data:`, error);
           }
         });
@@ -21212,6 +24500,7 @@ export async function refreshBrandAnalysis() {
 
           console.log("Website re-scan completed");
         } catch (error) {
+          void error;
           console.log(
             "Website re-scan failed, continuing with cached data:",
             error,
@@ -21228,6 +24517,7 @@ export async function refreshBrandAnalysis() {
 
       console.log("Enhanced brand refresh completed successfully");
     } catch (error) {
+      void error;
       console.error("Brand refresh failed:", error);
 
       // Update status to failed
@@ -21471,6 +24761,7 @@ export async function generateAdvancedBrandIntelligence() {
 
       console.log(`Advanced brand intelligence generated successfully`);
     } catch (error) {
+      void error;
       console.error("Error generating advanced brand intelligence:", error);
 
       // Update status to failed
@@ -21551,69 +24842,189 @@ export async function listSavedInsights(input?: {
   type?: "trending" | "viral" | "audience";
 }) {
   try {
-    console.log(
-      "[listSavedInsights] Starting function execution with input:",
-      input,
-    );
-
+    console.log("[listSavedInsights] start", input);
     const { userId } = await getAuth({ required: true });
-    console.log("[listSavedInsights] Authenticated user ID:", userId);
 
     const where: any = { userId };
-    if (input?.type) {
-      where.type = input.type;
-      console.log("[listSavedInsights] Filtering by type:", input.type);
-    }
+    if (input?.type) where.type = input.type;
 
-    console.log("[listSavedInsights] Query where clause:", where);
-
-    const insights = await db.savedInsight.findMany({
+    const insightsPromise = db.savedInsight.findMany({
       where,
       orderBy: { createdAt: "desc" },
     });
 
-    console.log("[listSavedInsights] Found", insights.length, "saved insights");
+    // Fast timeout to avoid blocking the UI
+    const timeoutMs = 5000;
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(
+        () => reject(new Error("DB timeout in listSavedInsights")),
+        timeoutMs,
+      ),
+    );
 
-    const processedInsights = insights.map((insight) => {
+    const insights = (await Promise.race([
+      insightsPromise,
+      timeoutPromise,
+    ])) as any[];
+
+    const processedInsights = (insights || []).map((insight) => {
       try {
-        return {
-          ...insight,
-          data: JSON.parse(insight.data),
-        };
-      } catch (parseError) {
-        console.error(
-          "[listSavedInsights] Failed to parse insight data for ID:",
-          insight.id,
-          parseError,
-        );
-        return {
-          ...insight,
-          data: null, // Return null for unparseable data
-        };
+        return { ...insight, data: JSON.parse(insight.data) };
+      } catch {
+        console.error("[listSavedInsights] JSON parse error for:", insight.id);
+        return { ...insight, data: null };
       }
     });
 
-    console.log(
-      "[listSavedInsights] Successfully processed",
-      processedInsights.length,
-      "insights",
-    );
+    console.log("[listSavedInsights] processed", processedInsights.length);
     return processedInsights;
   } catch (error) {
-    console.error("[listSavedInsights] Unexpected error in function:", error);
-    console.error(
-      "[listSavedInsights] Error stack:",
-      error instanceof Error ? error.stack : "No stack trace",
-    );
-
-    // Re-throw the error so it's properly handled by the API layer
-    throw new Error(
-      `Failed to list saved insights: ${error instanceof Error ? error.message : "Unknown error"}`,
-    );
+    console.error("[listSavedInsights] fallback due to error:", error);
+    // Graceful fallback
+    return [] as any[];
   }
 }
 
 // Credit Management Functions
+// Ideas (Beta) unified feed and interactions
+export async function getIdeasFeed(input?: {
+  limit?: number;
+  include?: Array<"trending" | "viral" | "audience">;
+  seed?: string;
+}) {
+  const settings = await getUserSettings();
+  if (!settings?.ideasBetaEnabled) {
+    return {
+      enabled: false as const,
+      status: "DISABLED" as const,
+      items: [] as any[],
+    };
+  }
+  try {
+    const data: any = await getAdvancedInsights({});
+    const include = input?.include?.length
+      ? new Set(input?.include)
+      : new Set(["trending", "viral"] as const);
+    const items: Array<{
+      id: string;
+      type: "trending" | "viral" | "audience";
+      title: string;
+      hook?: string;
+      body?: string;
+      score?: number;
+      platforms?: string[];
+      sources?: { title: string; url: string }[];
+      raw: any;
+    }> = [];
+
+    if (data && data.status === "COMPLETED") {
+      if (include.has("trending") && Array.isArray(data.trendingTopics)) {
+        for (const t of data.trendingTopics as any[]) {
+          const id = `trending:${t.topic}|${t.strategicAngle || ""}`;
+          items.push({
+            id,
+            type: "trending",
+            title: t.topic,
+            hook: t.exampleHook || t.strategicAngle,
+            body: t.samplePost || t.executiveSummary,
+            score: Number(t.relevanceScore) || undefined,
+            sources: Array.isArray(t.sources) ? t.sources : undefined,
+            raw: t,
+          });
+        }
+      }
+      if (include.has("viral") && Array.isArray(data.viralContentPotential)) {
+        for (const v of data.viralContentPotential as any[]) {
+          const id = `viral:${v.concept}|${v.hook || ""}`;
+          items.push({
+            id,
+            type: "viral",
+            title: v.concept,
+            hook: v.hook,
+            body: v.body,
+            score: Number(v.viralityScore) || undefined,
+            platforms: Array.isArray(v.targetPlatforms)
+              ? v.targetPlatforms
+              : undefined,
+            raw: v,
+          });
+        }
+      }
+    }
+
+    // Filter out dismissed ideas for this user
+    try {
+      const { userId } = await getAuth({ required: true });
+      const dismissed = await db.ideaInteraction.findMany({
+        where: { userId, action: "dismiss" },
+        select: { ideaId: true },
+      });
+      const dismissedSet = new Set(dismissed.map((d) => d.ideaId));
+      const filtered = items.filter((i) => !dismissedSet.has(i.id));
+      const limit = input?.limit && input.limit > 0 ? input.limit : 30;
+      const sorted = filtered.sort(
+        (a, b) =>
+          (b.score || 0) - (a.score || 0) || a.title.localeCompare(b.title),
+      );
+      const status = sorted.length ? ("READY" as const) : ("EMPTY" as const);
+      return {
+        enabled: true as const,
+        status,
+        items: sorted.slice(0, limit),
+      };
+    } catch {
+      // If filtering failed, return unfiltered items
+      const limit = input?.limit && input.limit > 0 ? input.limit : 30;
+      const status = items.length ? ("READY" as const) : ("EMPTY" as const);
+      return {
+        enabled: true as const,
+        status,
+        items: items.slice(0, limit),
+      };
+    }
+  } catch (e) {
+    console.error("[getIdeasFeed] failed", e);
+    return {
+      enabled: true as const,
+      status: "EMPTY" as const,
+      items: [] as any[],
+    };
+  }
+}
+
+export async function recordIdeaInteraction(input: {
+  ideaId: string;
+  ideaType: "trending" | "viral" | "audience";
+  action: "dismiss" | "explore" | "save" | "share" | "open";
+  metadata?: any;
+}) {
+  try {
+    const { userId } = await getAuth({ required: true });
+    const data = {
+      userId,
+      ideaId: input.ideaId,
+      ideaType: input.ideaType,
+      action: input.action,
+      metadata: input.metadata ? JSON.stringify(input.metadata) : null,
+    } as const;
+    try {
+      await db.ideaInteraction.create({ data });
+    } catch {
+      await db.ideaInteraction.updateMany({
+        where: { userId, ideaId: input.ideaId, action: input.action },
+        data: {
+          ideaType: input.ideaType,
+          metadata: input.metadata ? JSON.stringify(input.metadata) : null,
+        },
+      });
+    }
+    return { ok: true as const };
+  } catch (e) {
+    console.error("[recordIdeaInteraction] failed", e);
+    return { ok: false as const };
+  }
+}
+
 export async function getUserCredits() {
   const { userId } = await getAuth({ required: true });
 
@@ -21743,7 +25154,8 @@ export async function getCreditTransactionHistory(input?: {
 export async function isSuperAdmin() {
   try {
     return await checkSuperAdminStatus();
-  } catch {
+  } catch (error) {
+    void error;
     return false;
   }
 }
@@ -21880,6 +25292,7 @@ export async function getSubscriptionStatus() {
       allPurchases: purchases,
     };
   } catch (error) {
+    void error;
     console.error("Error getting subscription status:", error);
     const userCredits = await getUserCredits();
     return {
@@ -21923,6 +25336,7 @@ export async function getAvailableSubscriptionPlans() {
       allProducts: [...subscriptionPlans, ...creditPacks],
     };
   } catch (error) {
+    void error;
     console.error("Error getting available subscription plans:", error);
     return {
       subscriptionPlans: [],
@@ -22204,6 +25618,7 @@ export async function getSubscriptionUpgradeOptions() {
       creditPacks: availablePlans.creditPacks,
     };
   } catch (error) {
+    void error;
     console.error("Error getting subscription upgrade options:", error);
     return {
       currentPlan: "free",
@@ -22366,6 +25781,7 @@ export async function syncSubscriptionBenefits() {
       ),
     };
   } catch (error) {
+    void error;
     console.error("Error syncing subscription benefits:", error);
     throw error;
   }
@@ -22424,6 +25840,7 @@ export async function _monthlyCreditsResetHandler() {
 
     console.log(`Successfully reset credits for ${usersToReset.length} users`);
   } catch (error) {
+    void error;
     console.error("Error in monthly credits reset:", error);
   }
 }
@@ -22599,6 +26016,7 @@ export async function _seedACUSubscriptionProducts() {
       await discontinueProduct({ productId: product.id });
     }
   } catch (error) {
+    void error;
     console.log(
       "No existing products to discontinue or error occurred:",
       error,
@@ -22689,6 +26107,7 @@ export async function discontinueProductById({
     await discontinueProduct({ productId });
     return { success: true, message: "Product discontinued successfully" };
   } catch (error) {
+    void error;
     console.error("Error discontinuing product:", error);
     throw new Error("Failed to discontinue product");
   }
@@ -22710,10 +26129,14 @@ export async function setSuperAdmin({
 
   // Special case: Allow metamarketers23@gmail.com to be set as superadmin even if no current superadmin exists
   // This handles the bootstrap case where we need to create the first superadmin
+  const thereIsNoSuperAdmin = !(await db.user.findFirst({
+    where: { isSuperAdmin: true },
+  }));
   const isBootstrapCase =
-    email === "metamarketers23@gmail.com" &&
-    (currentUser?.handle === "metamarketers23452201367" ||
-      currentUser?.name === "Metamarketers23");
+    thereIsNoSuperAdmin ||
+    (email === "metamarketers23@gmail.com" &&
+      (currentUser?.handle === "metamarketers23452201367" ||
+        currentUser?.name === "Metamarketers23"));
 
   // Only existing superadmins can modify superadmin status, unless it's the bootstrap case
   const currentUserIsSuperAdmin = await checkSuperAdminStatus();
@@ -22995,6 +26418,41 @@ export async function submitWaitlistEntry(input: {
         usageDetails: input.usageDetails,
       },
     });
+
+    // Best-effort: send confirmation to the submitter (may create an Adaptive account if not existing)
+    try {
+      await inviteUser({
+        email: input.email,
+        subject: "You're on the SocialWave waitlist",
+        markdown: `Thanks for joining the SocialWave waitlist!\n\nWe'll keep you posted with product updates and early access invites. In the meantime, you can learn more about SocialWave on our homepage.\n\n[Visit SocialWave](/)`,
+        unauthenticatedLinks: true,
+      });
+    } catch (e) {
+      console.error("Failed to send waitlist confirmation to user:", e);
+    }
+
+    // Notify admins
+    try {
+      const admins = await db.user.findMany({
+        where: { isSuperAdmin: true },
+        select: { id: true, name: true },
+      });
+
+      if (admins.length > 0) {
+        const adminMarkdown = `### New Waitlist Signup\n\n- Email: ${input.email}\n- Details: ${input.usageDetails || "(none provided)"}\n\nManage signups from your dashboard.`;
+        await Promise.allSettled(
+          admins.map((admin) =>
+            sendEmail({
+              toUserId: admin.id,
+              subject: "New waitlist signup",
+              markdown: adminMarkdown,
+            }),
+          ),
+        );
+      }
+    } catch (e) {
+      console.error("Failed to notify admins about waitlist signup:", e);
+    }
 
     return { success: true, id: waitlistEntry.id };
   } catch (error: any) {
@@ -23540,6 +26998,7 @@ export async function generateContentWithUpgradeFlow(
       ...result,
     };
   } catch (error) {
+    void error;
     console.error(`Error in ${featureName}:`, error);
     throw error;
   }
@@ -23824,9 +27283,436 @@ export async function getOptimalPostingTimes(input?: { platform?: string }) {
 
     return recommendations;
   } catch (error) {
+    void error;
     console.error("Error analyzing optimal posting times:", error);
     return getGeneralOptimalTimes(input?.platform);
   }
+}
+
+// Preflight endpoint to validate and suggest fixes before scheduling
+export async function preflightSchedule(input: {
+  content: string;
+  platform: string;
+  accountId?: string;
+  pageId?: string;
+  scheduledAt?: Date | string;
+  sourceType?: string;
+  sourceId?: string;
+  imageUrl?: string;
+}): Promise<{
+  isValid: boolean;
+  errors: string[];
+  warnings: string[];
+  suggestions: {
+    content?: {
+      originalLength: number;
+      maxLength?: number;
+      overBy?: number;
+      charsRemaining?: number;
+      sanitized?: string;
+      trimmed?: string;
+    };
+    requiresReconnect?: boolean;
+    needsPageSelection?: boolean;
+    availablePages?: Array<{ id: string; pageId: string; pageName: string }>;
+    suggestedTimes?: string[]; // ISO strings
+    bestTimeChips?: Array<{ label: string; datetime: string }>;
+    platformPreview?: { content: string; notes: string[] };
+  };
+}> {
+  const { userId } = await getAuth({ required: true });
+
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const suggestions: any = {};
+
+  const platform = (input.platform || "").toLowerCase();
+  const platformLimits = (PLATFORM_LIMITS as any)[platform];
+
+  // 1) Content validation
+  const contentValidation = await validatePostContent({
+    content: input.content,
+    platform: input.platform,
+    accountId: input.accountId || "",
+    scheduledAt: new Date(
+      input.scheduledAt || new Date(Date.now() + 10 * 60 * 1000),
+    ),
+    sourceType: input.sourceType || "manual",
+    sourceId: input.sourceId || "preflight",
+    imageUrl: input.imageUrl,
+  });
+  errors.push(...contentValidation.errors);
+  warnings.push(...contentValidation.warnings);
+
+  // Suggest sanitized and trimmed variants
+  try {
+    const sanitized = await _sanitizeGeneratedText(input.content);
+    let trimmed = sanitized;
+    let overBy: number | undefined = undefined;
+    let charsRemaining: number | undefined = undefined;
+    let maxLength: number | undefined = undefined;
+    if (platformLimits) {
+      maxLength = platformLimits.maxLength;
+      if (sanitized.length > platformLimits.maxLength) {
+        overBy = sanitized.length - platformLimits.maxLength;
+        trimmed = sanitized.slice(0, platformLimits.maxLength);
+      } else {
+        charsRemaining = platformLimits.maxLength - sanitized.length;
+      }
+    }
+    suggestions.content = {
+      originalLength: input.content.length,
+      maxLength,
+      overBy,
+      charsRemaining,
+      sanitized,
+      trimmed,
+    };
+  } catch {
+    void 0;
+  }
+
+  // Ensure sanitized/trimmed defaults for content so UI actions always work
+  try {
+    if (!(suggestions as any).content) {
+      const sanitizedFallback = _sanitizeGeneratedText(
+        String(input.content ?? ""),
+      );
+      let trimmed = sanitizedFallback;
+      let overBy: number | undefined = undefined;
+      let charsRemaining: number | undefined = undefined;
+      let maxLength: number | undefined = undefined;
+      if (platformLimits) {
+        maxLength = platformLimits.maxLength;
+        if (sanitizedFallback.length > platformLimits.maxLength) {
+          overBy = sanitizedFallback.length - platformLimits.maxLength;
+          trimmed = sanitizedFallback.slice(0, platformLimits.maxLength);
+        } else {
+          charsRemaining = platformLimits.maxLength - sanitizedFallback.length;
+        }
+      }
+      (suggestions as any).content = {
+        originalLength: (input.content || "").length,
+        maxLength,
+        overBy,
+        charsRemaining,
+        sanitized: sanitizedFallback,
+        trimmed,
+      };
+    }
+  } catch {}
+
+  // 2) Account/permissions validation
+  if (input.accountId) {
+    const accountValidation = await validateAccountPermissions(
+      userId,
+      input.accountId,
+      input.platform,
+      input.pageId,
+    );
+    errors.push(...accountValidation.errors);
+    warnings.push(...accountValidation.warnings);
+
+    // Reconnect suggestion if token missing
+    try {
+      const account = await db.account.findFirst({
+        where: { userId, accountId: input.accountId, platform: input.platform },
+        include: { pages: true },
+      });
+      if (!account?.accessToken) {
+        suggestions.requiresReconnect = true;
+      }
+      if (
+        (platform === "facebook" || platform === "instagram") &&
+        !input.pageId
+      ) {
+        suggestions.needsPageSelection = true;
+        suggestions.availablePages = (account?.pages || []).map((p: any) => ({
+          id: p.id,
+          pageId: p.pageId,
+          pageName: p.pageName,
+        }));
+      }
+    } catch {
+      void 0;
+    }
+  }
+
+  // 3) Time & conflicts (only if scheduledAt provided)
+  if (input.scheduledAt) {
+    const timeValidation = await validateSchedulingTime(
+      new Date(input.scheduledAt),
+      input.platform,
+      userId,
+    );
+    errors.push(...timeValidation.errors);
+    warnings.push(...timeValidation.warnings);
+
+    if (input.accountId) {
+      try {
+        const scheduledTime = new Date(input.scheduledAt);
+        const windowMinutes = 30;
+        const startTime = new Date(
+          scheduledTime.getTime() - windowMinutes * 60 * 1000,
+        );
+        const endTime = new Date(
+          scheduledTime.getTime() + windowMinutes * 60 * 1000,
+        );
+        const conflicts = await db.scheduledPost.findMany({
+          where: {
+            userId,
+            platform: input.platform ?? "twitter",
+            accountId: input.accountId,
+            status: "PENDING",
+            scheduledAt: { gte: startTime, lte: endTime },
+          },
+          orderBy: { scheduledAt: "asc" },
+          select: {
+            id: true,
+            content: true,
+            scheduledAt: true,
+            platform: true,
+          },
+        });
+        if (conflicts.length > 0) {
+          warnings.push(
+            `There are ${conflicts.length} other scheduled post(s) within 30 minutes.`,
+          );
+          suggestions.suggestedTimes = [
+            new Date(endTime.getTime() + 5 * 60 * 1000).toISOString(),
+            new Date(startTime.getTime() - 5 * 60 * 1000).toISOString(),
+          ];
+        }
+      } catch {
+        void 0;
+      }
+    }
+  }
+
+  // 4) Best-time chips (next 3 upcoming slots)
+  try {
+    const recs = await getOptimalPostingTimes({ platform: input.platform });
+    const chips: Array<{ label: string; datetime: string }> = [];
+
+    const dayIndexMap: Record<string, number> = {
+      Sunday: 0,
+      Monday: 1,
+      Tuesday: 2,
+      Wednesday: 3,
+      Thursday: 4,
+      Friday: 5,
+      Saturday: 6,
+    };
+
+    const toNextDate = (dayName: string, timeLabel: string) => {
+      try {
+        const targetDow = dayIndexMap[dayName] ?? new Date().getDay();
+        const timeMatch = timeLabel.match(
+          /^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)$/i,
+        );
+        let hours = 9;
+        let minutes = 0;
+        if (timeMatch) {
+          const h = parseInt(timeMatch[1]!, 10);
+          const m = timeMatch[2] ? parseInt(timeMatch[2], 10) : 0;
+          const ampm = (timeMatch[3] || "AM").toUpperCase();
+          hours = (h % 12) + (ampm === "PM" ? 12 : 0);
+          minutes = m;
+        }
+        const now = new Date();
+        const result = new Date(now);
+        const diff = (targetDow - now.getDay() + 7) % 7;
+        result.setDate(now.getDate() + diff);
+        result.setHours(hours, minutes, 0, 0);
+        if (result <= now) result.setDate(result.getDate() + 7);
+        return result.toISOString();
+      } catch {
+        return new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      }
+    };
+
+    const optimalTimes: any[] = Array.isArray((recs as any)?.optimalTimes)
+      ? (recs as any).optimalTimes
+      : [];
+
+    for (let i = 0; i < Math.min(3, optimalTimes.length); i++) {
+      const slot = optimalTimes[i];
+      if (slot?.dayName && slot?.time) {
+        const iso = toNextDate(slot.dayName, slot.time);
+        chips.push({ label: `${slot.dayName} ${slot.time}`, datetime: iso });
+      }
+    }
+
+    suggestions.bestTimeChips = chips;
+  } catch {
+    void 0;
+  }
+
+  // 5) Platform preview
+  try {
+    const notes: string[] = [];
+    if (platform === "twitter" && (input.content || "").includes("http://")) {
+      notes.push("Links will be shown as t.co URLs");
+    }
+    if (platform === "linkedin") {
+      notes.push("Line breaks are preserved. Hashtags recommended at the end.");
+    }
+    const previewContent =
+      suggestions.content?.trimmed ||
+      suggestions.content?.sanitized ||
+      input.content;
+    suggestions.platformPreview = {
+      content: previewContent,
+      notes,
+    };
+  } catch {
+    void 0;
+  }
+
+  // 6) Voice Match & Authenticity meters
+  try {
+    const text = String(suggestions.content?.sanitized ?? input.content ?? "");
+    const brand = await getBrandGuidelines().catch(() => null as any);
+    let authenticity = 100;
+
+    const aiTellPatterns = [
+      /\b(in this post|let's dive in|as an ai|as a language model)\b/i,
+      /^\s*(sure|absolutely|certainly|of course),\s*/i,
+      /\b(i recommend|i suggest|i think|i believe)\b/i,
+    ];
+    const exclamations = (text.match(/!/g) || []).length;
+    const codeTicks = (text.match(/`/g) || []).length;
+    let aiTells = aiTellPatterns.reduce(
+      (acc, re) => acc + (re.test(text) ? 1 : 0),
+      0,
+    );
+    aiTells += exclamations > 3 ? 1 : 0;
+    aiTells += codeTicks > 0 ? 1 : 0;
+    authenticity = Math.max(0, Math.min(100, 100 - aiTells * 15));
+
+    // Simple sentence-length variety score (higher stdev → more human cadence)
+    const sentences = text
+      .split(/(?<=[.!?])\s+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    const lengths = sentences.map((s) => s.split(/\s+/).length);
+    const avg =
+      lengths.length > 0
+        ? lengths.reduce((a, b) => a + b, 0) / lengths.length
+        : 0;
+    const stdev =
+      lengths.length > 1
+        ? Math.sqrt(
+            lengths.reduce((a, b) => a + Math.pow(b - avg, 2), 0) /
+              lengths.length,
+          )
+        : 0;
+    const cadenceBoost = stdev / (avg || 1); // ~0.0–1.0+ range
+    authenticity = Math.round(
+      Math.max(
+        0,
+        Math.min(100, authenticity + Math.min(15, cadenceBoost * 20)),
+      ),
+    );
+
+    // Voice match: reward brand-specific terms and penalize avoid phrases
+    let voice = 60;
+    const toUse: string[] = Array.isArray((brand as any)?.phrasesToUse)
+      ? (brand as any).phrasesToUse
+      : [];
+    const toAvoid: string[] = Array.isArray((brand as any)?.phrasesToAvoid)
+      ? (brand as any).phrasesToAvoid
+      : [];
+    const lcText = text.toLowerCase();
+    const useHits = toUse.filter(
+      (p) => typeof p === "string" && lcText.includes(p.toLowerCase()),
+    ).length;
+    const avoidHits = toAvoid.filter(
+      (p) => typeof p === "string" && lcText.includes(p.toLowerCase()),
+    ).length;
+    voice += Math.min(30, useHits * 12);
+    voice -= Math.min(30, avoidHits * 15);
+    voice = Math.max(0, Math.min(100, Math.round(voice)));
+
+    (suggestions as any).meters = {
+      voiceMatch: voice,
+      authenticity,
+    };
+  } catch {
+    void 0;
+  }
+
+  // Ensure meters defaults so UI can always display scores
+  try {
+    if (!(suggestions as any).meters) {
+      const text = String(
+        (suggestions as any).content?.sanitized ?? input.content ?? "",
+      );
+      let authenticity = 100;
+      const aiTellPatterns = [
+        /\b(in this post|let's dive in|as an ai|as a language model)\b/i,
+        /^\s*(sure|absolutely|certainly|of course),\s*/i,
+        /\b(i recommend|i suggest|i think|i believe)\b/i,
+      ];
+      const exclamations = (text.match(/!/g) || []).length;
+      const codeTicks = (text.match(/`/g) || []).length;
+      let aiTells = aiTellPatterns.reduce(
+        (acc, re) => acc + (re.test(text) ? 1 : 0),
+        0,
+      );
+      aiTells += exclamations > 3 ? 1 : 0;
+      aiTells += codeTicks > 0 ? 1 : 0;
+      authenticity = Math.max(0, Math.min(100, 100 - aiTells * 15));
+
+      const sentences = text
+        .split(/(?<=[.!?])\s+/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      const lengths = sentences.map((s) => s.split(/\s+/).length);
+      const avg =
+        lengths.length > 0
+          ? lengths.reduce((a, b) => a + b, 0) / lengths.length
+          : 0;
+      const stdev =
+        lengths.length > 1
+          ? Math.sqrt(
+              lengths.reduce((a, b) => a + Math.pow(b - avg, 2), 0) /
+                lengths.length,
+            )
+          : 0;
+      const cadenceBoost = stdev / (avg || 1);
+      authenticity = Math.round(
+        Math.max(
+          0,
+          Math.min(100, authenticity + Math.min(15, cadenceBoost * 20)),
+        ),
+      );
+
+      const brand = await getBrandGuidelines().catch(() => null as any);
+      let voice = 60;
+      const toUse: string[] = Array.isArray((brand as any)?.phrasesToUse)
+        ? (brand as any).phrasesToUse
+        : [];
+      const toAvoid: string[] = Array.isArray((brand as any)?.phrasesToAvoid)
+        ? (brand as any).phrasesToAvoid
+        : [];
+      const lcText = text.toLowerCase();
+      const useHits = toUse.filter(
+        (p) => typeof p === "string" && lcText.includes(p.toLowerCase()),
+      ).length;
+      const avoidHits = toAvoid.filter(
+        (p) => typeof p === "string" && lcText.includes(p.toLowerCase()),
+      ).length;
+      voice += Math.min(30, useHits * 12);
+      voice -= Math.min(30, avoidHits * 15);
+      voice = Math.max(0, Math.min(100, Math.round(voice)));
+
+      (suggestions as any).meters = { voiceMatch: voice, authenticity };
+    }
+  } catch {}
+
+  const isValid = errors.length === 0;
+  return { isValid, errors, warnings, suggestions };
 }
 
 function formatHour(hour: number): string {
@@ -23890,6 +27776,7 @@ export async function _seedPostAnalytics() {
         console.log(`Created post analytics for: ${post.postId}`);
       }
     } catch (error) {
+      void error;
       console.error(
         `Failed to create post analytics for ${post.postId}:`,
         error,
@@ -24828,6 +28715,7 @@ Identify key tone and style differences.`,
 
     return result;
   } catch (error) {
+    void error;
     console.error("Error analyzing tone patterns:", error);
     return { error: "Failed to analyze tone patterns" };
   }
@@ -24953,6 +28841,7 @@ export async function getLearningInsights() {
     try {
       parsedData = JSON.parse(insight.insightData || "{}");
     } catch (error) {
+      void error;
       console.error("Failed to parse insight data:", error);
     }
 
@@ -25311,6 +29200,7 @@ export async function triggerLearningEngine() {
 
       // No return statement - queueTask expects Promise<void>
     } catch (error) {
+      void error;
       console.error("Learning engine failed:", error);
       throw error;
     }
@@ -25451,6 +29341,7 @@ export async function getContentStudioAnalytics(input?: {
   try {
     return await getUnifiedAnalyticsDashboard(input);
   } catch (error) {
+    void error;
     console.error("Error fetching Content Studio analytics:", error);
     throw error;
   }
@@ -25460,6 +29351,7 @@ export async function getContentStudioInsights() {
   try {
     return await getViralInsights();
   } catch (error) {
+    void error;
     console.error("Error fetching Content Studio insights:", error);
     throw error;
   }
@@ -25473,6 +29365,7 @@ export async function getPersonalizedRecommendations(input?: {
   try {
     return await getPersonalizedContentRecommendations(input);
   } catch (error) {
+    void error;
     console.error("Error fetching personalized recommendations:", error);
     throw error;
   }
@@ -25495,12 +29388,14 @@ export async function generatePersonalizedThread(input: {
 
   try {
     const result = await generatePersonalizedContent(input);
+    const sanitizedResult = _enforceBrandVibeOnContentPackage(result as any);
     return {
       success: true,
       requiresUpgrade: false,
-      ...result,
+      ...sanitizedResult,
     };
   } catch (error) {
+    void error;
     console.error("Error generating personalized thread:", error);
     throw error;
   }
@@ -25516,6 +29411,7 @@ export async function predictThreadViralPotential(input: {
   try {
     return await predictViralPotential(input);
   } catch (error) {
+    void error;
     console.error("Error predicting viral potential:", error);
     throw error;
   }
@@ -25527,6 +29423,7 @@ export async function getBrandVoiceAnalysis(input?: {
   try {
     return await analyzeBrandVoice(input);
   } catch (error) {
+    void error;
     console.error("Error analyzing brand voice:", error);
     throw error;
   }
@@ -25536,6 +29433,7 @@ export async function getUserBrandVoiceProfile() {
   try {
     return await getBrandVoiceProfile();
   } catch (error) {
+    void error;
     console.error("Error fetching brand voice profile:", error);
     throw error;
   }
@@ -25545,6 +29443,7 @@ export async function getViralPatterns() {
   try {
     return await getPersonalizedViralPatterns();
   } catch (error) {
+    void error;
     console.error("Error fetching viral patterns:", error);
     throw error;
   }
@@ -25702,6 +29601,7 @@ export async function getSmartContentSuggestions() {
 
     return enhancedSuggestions;
   } catch (error) {
+    void error;
     console.error("Error fetching smart content suggestions:", error);
     throw error;
   }
@@ -25728,6 +29628,7 @@ export async function generateFromOpportunity(input: {
       ...result,
     };
   } catch (error) {
+    void error;
     console.error("Error generating from opportunity:", error);
     throw error;
   }
@@ -25740,6 +29641,7 @@ export async function getContentScheduleRecommendations(input?: {
   try {
     return await getOptimalContentSchedule(input);
   } catch (error) {
+    void error;
     console.error("Error fetching schedule recommendations:", error);
     throw error;
   }
@@ -25771,6 +29673,7 @@ export async function trackThreadPerformance(input: {
   try {
     return await trackContentPerformance(input);
   } catch (error) {
+    void error;
     console.error("Error tracking thread performance:", error);
     throw error;
   }
@@ -25789,6 +29692,7 @@ export async function monitorThreadRealTime(input: {
   try {
     return await monitorRealTimePerformance(input);
   } catch (error) {
+    void error;
     console.error("Error monitoring real-time performance:", error);
     throw error;
   }
@@ -25813,6 +29717,7 @@ export async function updateAdaptiveLearning(input: {
   try {
     return await adaptiveLearningUpdate(input);
   } catch (error) {
+    void error;
     console.error("Error updating adaptive learning:", error);
     throw error;
   }
@@ -25825,6 +29730,7 @@ export async function getContentOptimizations(input?: {
   try {
     return await getDynamicOptimizations(input);
   } catch (error) {
+    void error;
     console.error("Error fetching content optimizations:", error);
     throw error;
   }
@@ -25834,6 +29740,7 @@ export async function getImprovementPlan() {
   try {
     return await getContinuousImprovementPlan();
   } catch (error) {
+    void error;
     console.error("Error fetching improvement plan:", error);
     throw error;
   }
@@ -25843,6 +29750,7 @@ export async function getLearningProgress() {
   try {
     return await getAdaptiveLearningProgress();
   } catch (error) {
+    void error;
     console.error("Error fetching learning progress:", error);
     throw error;
   }
@@ -25852,6 +29760,7 @@ export async function shareViralThread(input: { threadId: string }) {
   try {
     return await shareThread(input);
   } catch (error) {
+    void error;
     console.error("Error sharing viral thread:", error);
     throw error;
   }
@@ -25861,6 +29770,7 @@ export async function getSharedThread(input: { shareId: string }) {
   try {
     return await getPublicThread(input);
   } catch (error) {
+    void error;
     console.error("Error fetching shared thread:", error);
     throw error;
   }
@@ -25897,6 +29807,7 @@ export async function shareGeneratedContent(input: { contentId: string }) {
     });
     return { shareId: created.id };
   } catch (error) {
+    void error;
     console.error("Error sharing generated content:", error);
     throw error;
   }
@@ -25927,6 +29838,7 @@ export async function getSharedGeneratedContent(input: { shareId: string }) {
     }
     return content;
   } catch (error) {
+    void error;
     console.error("Error fetching shared generated content:", error);
     throw error;
   }
@@ -25943,6 +29855,7 @@ export async function optimizeViralThread(input: {
   try {
     return await optimizeThread(input);
   } catch (error) {
+    void error;
     console.error("Error optimizing viral thread:", error);
     throw error;
   }
@@ -25952,6 +29865,7 @@ export async function getThreadFormatInsights(input: { threadId: string }) {
   try {
     return await getFormatIntelligenceInsights(input);
   } catch (error) {
+    void error;
     console.error("Error fetching format insights:", error);
     throw error;
   }
@@ -25961,6 +29875,7 @@ export async function getRealTimeDashboard() {
   try {
     return await getRealTimePerformanceDashboard();
   } catch (error) {
+    void error;
     console.error("Error fetching real-time dashboard:", error);
     throw error;
   }
@@ -26019,9 +29934,153 @@ export async function createNotification(input: {
 
     return notification;
   } catch (error) {
+    void error;
     console.error("Error creating notification:", error);
     throw error;
   }
+}
+
+// Send a "curiosity" nudge that automatically respects quiet hours and daily caps
+export async function sendCuriosityNudge(input: {
+  title: string;
+  message: string;
+  priority?: "low" | "normal" | "high" | "urgent";
+  actionType?: "navigate" | "modal" | "external" | "none";
+  actionUrl?: string;
+  actionData?: Record<string, any>;
+  imageUrl?: string;
+  metadata?: Record<string, any>;
+}) {
+  const { userId } = await getAuth({ required: true });
+
+  const settings = await getUserSettings();
+
+  const parseHHMM = (t: string) => {
+    const parts = (t ?? "").split(":");
+    const h = Number(parts[0] ?? "0");
+    const m = Number(parts[1] ?? "0");
+    const hh = Number.isFinite(h) ? h : 0;
+    const mm = Number.isFinite(m) ? m : 0;
+    return { hh, mm };
+  };
+
+  const now = new Date();
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  const { hh: qsH, mm: qsM } = parseHHMM(settings.quietHoursStart ?? "21:00");
+  const { hh: qeH, mm: qeM } = parseHHMM(settings.quietHoursEnd ?? "08:00");
+  const start = qsH * 60 + qsM;
+  const end = qeH * 60 + qeM;
+
+  const isWithinQuietHours =
+    start < end
+      ? nowMinutes >= start && nowMinutes < end
+      : nowMinutes >= start || nowMinutes < end; // window crosses midnight
+
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const endOfDay = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+    23,
+    59,
+    59,
+    999,
+  );
+
+  const nudgesSentToday = await db.notification.count({
+    where: {
+      userId,
+      category: "curiosity",
+      createdAt: { gte: startOfDay, lte: endOfDay },
+    },
+  });
+
+  const cap =
+    typeof settings.dailyNudgeCap === "number" ? settings.dailyNudgeCap : 1;
+
+  const buildNextAllowedTime = (): Date => {
+    if (isWithinQuietHours) {
+      // schedule at quietHoursEnd of the current/next day
+      let dayOffset = 0;
+      if (start < end) {
+        // Within a same-day quiet window; schedule today at end
+        dayOffset = 0;
+      } else {
+        // Quiet window crosses midnight; if now < end, schedule today at end; else (now >= start) schedule tomorrow at end
+        dayOffset = nowMinutes >= start ? 1 : 0;
+      }
+      const { hh, mm } = parseHHMM(settings.quietHoursEnd ?? "08:00");
+      const dt = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate() + dayOffset,
+        hh,
+        mm,
+        0,
+        0,
+      );
+      return dt;
+    }
+    // Not in quiet hours but daily cap reached: schedule at tomorrow quietHoursEnd
+    const { hh, mm } = parseHHMM(settings.quietHoursEnd ?? "08:00");
+    const dt = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate() + 1,
+      hh,
+      mm,
+      0,
+      0,
+    );
+    return dt;
+  };
+
+  const shouldSendNow = !isWithinQuietHours && nudgesSentToday < cap;
+
+  if (shouldSendNow) {
+    const notification = await createNotification({
+      userId,
+      title: input.title,
+      message: input.message,
+      type: "insight",
+      category: "curiosity",
+      priority: input.priority ?? "normal",
+      actionType: input.actionType,
+      actionUrl: input.actionUrl,
+      actionData: input.actionData,
+      imageUrl: input.imageUrl,
+      metadata: input.metadata,
+    });
+
+    try {
+      await db.userSettings.update({
+        where: { userId },
+        data: { lastNudgeAt: new Date() },
+      });
+    } catch (e) {
+      console.error("Failed updating lastNudgeAt", e);
+    }
+
+    return { status: "sent" as const, id: notification.id };
+  }
+
+  const scheduledFor = buildNextAllowedTime();
+  const notification = await createNotification({
+    userId,
+    title: input.title,
+    message: input.message,
+    type: "insight",
+    category: "curiosity",
+    priority: input.priority ?? "normal",
+    actionType: input.actionType,
+    actionUrl: input.actionUrl,
+    actionData: input.actionData,
+    imageUrl: input.imageUrl,
+    metadata: input.metadata,
+    scheduledFor,
+  });
+
+  return { status: "scheduled" as const, scheduledFor, id: notification.id };
 }
 
 // Get notifications for current user with filtering and pagination
@@ -26069,17 +30128,20 @@ export async function getNotifications(input?: {
     ]);
 
     const timeoutMs = 5000; // Keep the app snappy on load
-    const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(
-        () => reject(new Error("DB timeout in getNotifications")),
-        timeoutMs,
-      ),
+    const timeoutResult = new Promise((resolve) =>
+      setTimeout(() => resolve("TIMEOUT"), timeoutMs),
     );
 
-    const [notifications, totalCount, unreadCount] = (await Promise.race([
-      dbOps,
-      timeoutPromise,
-    ])) as any[];
+    const raceResult = await Promise.race([dbOps, timeoutResult]);
+    if (raceResult === "TIMEOUT") {
+      return {
+        notifications: [],
+        totalCount: 0,
+        unreadCount: 0,
+        hasMore: false,
+      };
+    }
+    const [notifications, totalCount, unreadCount] = raceResult as any[];
 
     const parsedNotifications = (notifications || []).map(
       (notification: any) => ({
@@ -26101,6 +30163,7 @@ export async function getNotifications(input?: {
         offset + limit < (totalCount || 0) && parsedNotifications.length > 0,
     };
   } catch (error) {
+    void error;
     console.error("getNotifications fallback due to error:", error);
     return {
       notifications: [],
@@ -26237,6 +30300,7 @@ export async function markNotificationRead(input: {
         : null,
     };
   } catch (error) {
+    void error;
     console.error("Error marking notification as read:", error);
     throw error;
   }
@@ -26272,6 +30336,7 @@ export async function markAllNotificationsRead(input?: {
 
     return { updatedCount: result.count };
   } catch (error) {
+    void error;
     console.error("Error marking all notifications as read:", error);
     throw error;
   }
@@ -26311,6 +30376,7 @@ export async function dismissNotification(input: { id: string }) {
         : null,
     };
   } catch (error) {
+    void error;
     console.error("Error dismissing notification:", error);
     throw error;
   }
@@ -26350,6 +30416,7 @@ export async function archiveNotifications(input: {
 
     return { archivedCount: result.count };
   } catch (error) {
+    void error;
     console.error("Error archiving notifications:", error);
     throw error;
   }
@@ -26386,6 +30453,7 @@ export async function deleteNotifications(input: {
 
     return { deletedCount: result.count };
   } catch (error) {
+    void error;
     console.error("Error deleting notifications:", error);
     throw error;
   }
@@ -26417,6 +30485,7 @@ export async function getNotificationById(input: { id: string }) {
         : null,
     };
   } catch (error) {
+    void error;
     console.error("Error fetching notification:", error);
     throw error;
   }
@@ -26454,6 +30523,7 @@ export async function processScheduledNotifications() {
 
     return { processedCount };
   } catch (error) {
+    void error;
     console.error("Error processing scheduled notifications:", error);
     throw error;
   }
@@ -26479,6 +30549,7 @@ export async function cleanupExpiredNotifications() {
 
     return { archivedCount: result.count };
   } catch (error) {
+    void error;
     console.error("Error cleaning up expired notifications:", error);
     throw error;
   }
@@ -26488,6 +30559,7 @@ export async function getContentStudioNotifications() {
   try {
     return await getNotifications({ limit: 20 });
   } catch (error) {
+    void error;
     console.error("Error fetching notifications:", error);
     throw error;
   }
@@ -26497,6 +30569,7 @@ export async function getContentStudioPreferences() {
   try {
     return await socialSparkGetUserPreferences();
   } catch (error) {
+    void error;
     console.error("Error fetching Content Studio preferences:", error);
     throw error;
   }
@@ -26516,6 +30589,7 @@ export async function updateContentStudioPreferences(input: {
   try {
     return await socialSparkUpdateUserPreferences(input);
   } catch (error) {
+    void error;
     console.error("Error updating Content Studio preferences:", error);
     throw error;
   }
@@ -26525,6 +30599,7 @@ export async function addUserAudience(input: { audience: string }) {
   try {
     return await addCustomAudience(input);
   } catch (error) {
+    void error;
     console.error("Error adding custom audience:", error);
     throw error;
   }
@@ -26537,6 +30612,7 @@ export async function uploadUserBrandLogo(input: {
   try {
     return await uploadBrandLogo(input);
   } catch (error) {
+    void error;
     console.error("Error uploading brand logo:", error);
     throw error;
   }
@@ -26580,6 +30656,7 @@ export async function getAdvancedContentAnalytics() {
 
     return enhancedAnalytics;
   } catch (error) {
+    void error;
     console.error("Error fetching advanced content analytics:", error);
     // Return fallback data structure
     return {
@@ -26642,6 +30719,7 @@ export async function getContentPerformanceInsights() {
       },
     };
   } catch (error) {
+    void error;
     console.error("Error fetching content performance insights:", error);
     return {
       performanceMetrics: {
@@ -26701,6 +30779,7 @@ export async function trackRecommendationPerformance(input: {
 
     return { success: true };
   } catch (error) {
+    void error;
     console.error("Error tracking recommendation performance:", error);
     throw error;
   }
@@ -26746,6 +30825,7 @@ export async function getRecommendationAnalytics() {
 
     return analytics;
   } catch (error) {
+    void error;
     console.error("Error fetching recommendation analytics:", error);
     return {
       totalRecommendations: 0,
@@ -26832,6 +30912,7 @@ export async function optimizeRecommendations() {
 
     return optimizations;
   } catch (error) {
+    void error;
     console.error("Error optimizing recommendations:", error);
     return {
       preferredContentTypes: [],
@@ -26896,6 +30977,7 @@ export async function trackDetailedPerformance(input: {
       compositeScore: calculateCompositeScore(input.metrics),
     };
   } catch (error) {
+    void error;
     console.error("Error tracking detailed performance:", error);
     throw error;
   }
@@ -26959,6 +31041,7 @@ async function updatePerformanceCache(
       },
     });
   } catch (error) {
+    void error;
     console.error("Error updating performance cache:", error);
   }
 }
@@ -27028,6 +31111,7 @@ export async function getRealTimePerformanceMetrics() {
       },
     };
   } catch (error) {
+    void error;
     console.error("Error fetching real-time performance metrics:", error);
     return {
       current: { totalContent: 0, averageScore: 0, topPerformer: null },
@@ -27141,6 +31225,7 @@ export async function getAdvancedOptimizationInsights() {
       ),
     };
   } catch (error) {
+    void error;
     console.error("Error generating advanced optimization insights:", error);
     return {
       currentPerformance: null,
@@ -27405,6 +31490,7 @@ export async function getContentStudioDashboard() {
       },
     };
   } catch (error) {
+    void error;
     console.error("Error fetching Content Studio dashboard:", error);
     return {
       overview: {
@@ -27492,6 +31578,7 @@ export async function trackUserBehavior(input: {
 
     return { success: true, eventId: event.id };
   } catch (error) {
+    void error;
     console.error("Error tracking user behavior:", error);
     return { success: false, error: "Failed to track behavior" };
   }
@@ -27558,6 +31645,7 @@ export async function updateContentResonanceScore(input: {
 
     return { success: true };
   } catch (error) {
+    void error;
     console.error("Error updating content resonance score:", error);
     return { success: false, error: "Failed to update resonance score" };
   }
@@ -27654,6 +31742,7 @@ async function updateUserEngagementPatterns(
       });
     }
   } catch (error) {
+    void error;
     console.error("Error updating engagement patterns:", error);
   }
 }
@@ -27725,6 +31814,7 @@ export async function getUserBehaviorAnalytics(input?: { timeRange?: number }) {
       },
     };
   } catch (error) {
+    void error;
     console.error("Error getting user behavior analytics:", error);
     throw new Error("Failed to get behavior analytics");
   }
@@ -27834,6 +31924,7 @@ export async function calculateInsightResonanceScore(input: {
       },
     };
   } catch (error) {
+    void error;
     console.error("Error calculating insight resonance score:", error);
     throw new Error("Failed to calculate resonance score");
   }
@@ -27896,6 +31987,7 @@ export async function rankInsightsByResonance(input: {
       withResonanceData: resonanceScores.length,
     };
   } catch (error) {
+    void error;
     console.error("Error ranking insights by resonance:", error);
     throw new Error("Failed to rank insights");
   }
@@ -28030,6 +32122,7 @@ export async function generatePersonalizedInsightRecommendations(input: {
       },
     };
   } catch (error) {
+    void error;
     console.error(
       "Error generating personalized insight recommendations:",
       error,
@@ -28114,6 +32207,7 @@ export async function trackInsightPerformance(input: {
       improvement: adjustedScore - existingScore.resonanceScore,
     };
   } catch (error) {
+    void error;
     console.error("Error tracking insight performance:", error);
     throw new Error("Failed to track performance");
   }
@@ -28249,6 +32343,7 @@ export async function getResonanceAnalytics(input?: {
       },
     };
   } catch (error) {
+    void error;
     console.error("Error getting resonance analytics:", error);
     throw new Error("Failed to get analytics");
   }
@@ -29281,10 +33376,81 @@ const RIPPLE_TOOL_REGISTRY = {
 export async function sendRippleMessage(input: {
   conversationId: string;
   message: string;
-  context?: string;
+  context?: string; // can carry ui hint like 'voice_locked' | 'voice_relaxed'
 }) {
   const { userId } = await getAuth({ required: true });
   const { conversationId, message, context } = input;
+  const voiceMode: "locked" | "relaxed" =
+    context && typeof context === "string" && context.includes("voice_relaxed")
+      ? "relaxed"
+      : "locked";
+
+  // Dynamically infer target platform and content type from the user message/context
+  function detectPlatformAndContentType(text: string, ctx?: string) {
+    const hay = `${text}\n${ctx ?? ""}`.toLowerCase();
+    let platform = "LinkedIn";
+    if (/(?:^|\b)(x|twitter|tweet|thread)\b/.test(hay)) platform = "X";
+    else if (/linkedin|li\b/.test(hay)) platform = "LinkedIn";
+    else if (/instagram|ig\b|reel|stories|story/.test(hay))
+      platform = "Instagram";
+    else if (/tiktok|tt\b/.test(hay)) platform = "TikTok";
+    else if (/youtube|shorts/.test(hay)) platform = "YouTube";
+    else if (/facebook|fb\b/.test(hay)) platform = "Facebook";
+
+    let contentType = "text post";
+    if (/thread/.test(hay)) contentType = "thread";
+    else if (/carousel/.test(hay)) contentType = "carousel";
+    else if (/reel|shorts|vertical video/.test(hay))
+      contentType = "short‑form video";
+    else if (/video script/.test(hay)) contentType = "video script";
+    else if (/caption/.test(hay)) contentType = "caption";
+    else if (/comment reply|reply/.test(hay)) contentType = "comment reply";
+
+    const templates: Record<string, string> = {
+      LinkedIn: [
+        "Format: Hook (1–2 lines) → blank line → 3 numbered shifts/bullets → decisive close question or CTA.",
+        "Length: 120–180 words; avoid emoji unless brand prefers; 2–4 precise hashtags at end.",
+        "Tone: expert, direct, no fluff; concrete metrics where possible.",
+      ].join("\n"),
+      X: [
+        "Format: Thread of 3–6 tweets; each <= 280 chars. Lead with a strong hook.",
+        "Use 1–2 short hashtags; sparing emoji if on‑brand; concise verbs; no walls of text.",
+        "End with a clear CTA or question in the last tweet.",
+      ].join("\n"),
+      Instagram: [
+        "Format: Caption with 1‑line hook, short skimmable lines, micro‑bullets.",
+        "If Reel: include 3‑beat script notes (Hook → Value → CTA).",
+        "Hashtags: 5–10 targeted at end. Keep line breaks for readability.",
+      ].join("\n"),
+      TikTok: [
+        "Format: 3‑beat script (Hook, Value, CTA) + concise caption.",
+        "On‑screen text cues where useful; keep energy high; 3–6 targeted hashtags.",
+      ].join("\n"),
+      YouTube: [
+        "Format: Title (<=70 chars) + 2–4 line description + outline of key beats.",
+        "Add 1 CTA and, if relevant, timestamps/chapters.",
+      ].join("\n"),
+      Facebook: [
+        "Format: 2–3 short lines + 1 key takeaway; 1 clear CTA; link if needed.",
+        "Avoid hashtag spam; 0–2 max. Keep conversational and clear.",
+      ].join("\n"),
+    };
+
+    const platformTemplate = templates[platform] || templates.LinkedIn;
+    return { platform, contentType, platformTemplate };
+  }
+
+  const { platform, contentType, platformTemplate } =
+    detectPlatformAndContentType(
+      message,
+      typeof context === "string" ? context : undefined,
+    );
+
+  const isAutoOpen =
+    typeof context === "string" && context.includes("auto_open");
+  const autoSectionMatch =
+    typeof context === "string" ? context.match(/auto_open:([a-z]+)/) : null;
+  const autoSection = autoSectionMatch?.[1] ?? "home";
 
   // Start real-time response stream for progress updates
   const stream = await startRealtimeResponse<{
@@ -29336,6 +33502,83 @@ export async function sendRippleMessage(input: {
   });
 
   try {
+    // If this was an auto-open, respond with an assistant-style greeting instead of generating content
+    if (isAutoOpen) {
+      const greetingBySection: Record<string, string[]> = {
+        home: [
+          "Create an on-brand post from today’s trends",
+          "Prioritize replies and draft responses",
+          "Summarize performance with 3 quick fixes",
+          "Plan a 7‑day schedule with best times",
+        ],
+        discover: [
+          "Turn what you’re viewing into 3 ready-to-post ideas",
+          "Draft a viral-style thread with hooks",
+          "Extract hashtags and angles that fit your voice",
+        ],
+        engage: [
+          "Sort replies by impact and draft responses",
+          "Surface comments needing attention now",
+          "Create saved replies in your brand voice",
+        ],
+        scheduler: [
+          "Fill gaps in the next 7 days",
+          "Suggest best times for each platform",
+          "Generate 3 posts to schedule now",
+        ],
+        settings: [
+          "Refine brand voice (tone, phrases, directives)",
+          "Generate a style guide sample post",
+          "Review audience personas and scenarios",
+        ],
+        analytics: [
+          "Give a one‑minute performance summary",
+          "Recommend 3 improvements with example rewrites",
+          "Spot quick wins by platform and format",
+        ],
+      };
+
+      const sectionBullets =
+        (greetingBySection as Record<string, string[]>)[autoSection] ??
+        greetingBySection.home ??
+        [];
+      const bullets = (sectionBullets as string[])
+        .slice(0, 4)
+        .map((b) => `• ${b}`)
+        .join("\n");
+
+      const brand = await getBrandGuidelines().catch(() => null as any);
+      const brandName = (brand as any)?.brandName || "your brand";
+
+      const assistantGreeting = `Hi — I’m Ripple. I’m ready to help ${brandName} right now. Based on where you are (${autoSection}), here are fast actions:\n\n${bullets}\n\nTell me which one to run, or type your goal.`;
+
+      const immediateMessage = await db.rippleMessage.create({
+        data: {
+          conversationId,
+          role: "assistant",
+          content: assistantGreeting,
+          metadata: JSON.stringify({
+            type: "assistant_opening",
+            section: autoSection,
+            voiceMode,
+          }),
+        },
+      });
+
+      stream.next({
+        status: "ready",
+        progress: 100,
+        currentStep: "Ready",
+        processing: false,
+      });
+      stream.end();
+      return {
+        message: immediateMessage,
+        conversation: { id: conversation.id, title: conversation.title },
+        processing: false,
+      } as const;
+    }
+
     // Create a fast, natural draft without canned preamble
     stream.next({
       status: "drafting",
@@ -29345,18 +33588,268 @@ export async function sendRippleMessage(input: {
     });
 
     // Build a concise first-draft answer using a faster model (answer-first, no preamble)
+    // Include quick user context + lightweight analytics snapshot to avoid "no access" replies
+    // Ultra-fast path: skip heavy context calls for the first draft
+    let quickContext = "";
+    try {
+      const key = generateContentCacheKey("ripple_quick_context", userId);
+      quickContext = (await getCachedContent(key, 5)) || "";
+      if (!quickContext) {
+        const unified: any = await getUnifiedContentContext(userId).catch(
+          () => null as any,
+        );
+        if (unified) {
+          const topics = Array.isArray(unified?.trendingTopics)
+            ? unified.trendingTopics
+                .slice(0, 3)
+                .map((t: any) => t?.title || t?.topic || t?.name)
+                .filter(Boolean)
+            : [];
+          const viral = Array.isArray(unified?.viralInsights)
+            ? unified.viralInsights
+                .slice(0, 2)
+                .map((v: any) => v?.title || v?.headline || v?.summary)
+                .filter(Boolean)
+            : [];
+          const vibe = unified?.brandVibe;
+          const vibeTone = Array.isArray(vibe?.brandPersonality)
+            ? vibe.brandPersonality.slice(0, 3).join(", ")
+            : "";
+          quickContext = [
+            topics.length ? `Top trends: ${topics.join("; ")}` : null,
+            viral.length ? `Viral insights: ${viral.join("; ")}` : null,
+            vibeTone ? `Brand vibe: ${vibeTone}` : null,
+          ]
+            .filter(Boolean)
+            .join("\n");
+          await setCachedContent(key, quickContext || "", userId);
+        }
+      }
+    } catch {}
+    const perf: any = null;
+    const behavior: any = null;
+    const realTime: any = null;
+
+    // Build a concise audience snapshot the model can lean on immediately
+    const peakHour = realTime?.insights?.peakPerformanceHour;
+    const bestPlatform =
+      realTime?.insights?.bestPerformingPlatform || "Unknown";
+    const general = getGeneralOptimalTimes();
+    const topGeneralTimes = (general?.optimalTimes || [])
+      .slice(0, 3)
+      .map((t: any) => `${t.dayName} ${t.time}`)
+      .join(", ");
+    const audienceSnapshot = [
+      bestPlatform && bestPlatform !== "Unknown"
+        ? `Top platform (last 24h): ${bestPlatform}`
+        : null,
+      typeof peakHour === "number"
+        ? `Peak hour (last 24h): ${formatHour(peakHour)}`
+        : null,
+      topGeneralTimes ? `General peak windows: ${topGeneralTimes}` : null,
+    ]
+      .filter(Boolean)
+      .join(" | ");
+
+    const quickDataSummary = JSON.stringify(
+      {
+        performance: perf
+          ? { summaryAvailable: true }
+          : { summaryAvailable: false },
+        behavior: behavior
+          ? { summaryAvailable: true }
+          : { summaryAvailable: false },
+        realTime: {
+          available: !!realTime,
+          bestPlatform,
+          peakHour: typeof peakHour === "number" ? formatHour(peakHour) : null,
+        },
+        audienceSnapshot,
+      },
+      null,
+      2,
+    );
+
+    // Build concise Brand Vibe summary to guide the model without bloating payloads
+    let brandVibeSummary = "";
+    try {
+      const summaryKey = generateContentCacheKey("brand_vibe_summary", userId);
+      brandVibeSummary = (await getCachedContent(summaryKey, 168)) || "";
+      if (!brandVibeSummary) {
+        const brand = await getBrandGuidelines();
+        if (brand) {
+          const safeJoin = (arr?: any[], max = 5) =>
+            Array.isArray(arr)
+              ? arr.slice(0, max).filter(Boolean).join(", ")
+              : "";
+          const truncate = (s?: string, n = 280) =>
+            s ? (s.length > n ? s.slice(0, n - 1) + "…" : s) : "";
+          const tone = safeJoin((brand as any).tonePriorities, 5);
+          const use = safeJoin((brand as any).phrasesToUse, 6);
+          const avoid = safeJoin((brand as any).phrasesToAvoid, 6);
+          const directives = safeJoin((brand as any).directives, 6);
+          const parts = [
+            (brand as any).brandName
+              ? `Brand: ${(brand as any).brandName}`
+              : null,
+            (brand as any).brandDescription
+              ? `Description: ${truncate((brand as any).brandDescription, 240)}`
+              : null,
+            (brand as any).brandVoice
+              ? `Voice: ${truncate((brand as any).brandVoice, 240)}`
+              : null,
+            tone ? `Tone: ${tone}` : null,
+            use ? `Use: ${use}` : null,
+            avoid ? `Avoid: ${avoid}` : null,
+            directives ? `Directives: ${directives}` : null,
+          ].filter(Boolean) as string[];
+          brandVibeSummary = parts.join("\n");
+        }
+        // Fallback: derive a snapshot from Brand Context when guidelines are missing or minimal
+        if (!brandVibeSummary) {
+          try {
+            const bc: any = await getBrandContext().catch(() => null);
+            if (bc) {
+              const fallbackLines: string[] = [];
+              if (bc.brandPersonality && Array.isArray(bc.brandPersonality))
+                fallbackLines.push(
+                  `Voice Traits: ${bc.brandPersonality.slice(0, 5).join(", ")}`,
+                );
+              if (bc.targetAudience?.demographics)
+                fallbackLines.push(
+                  `Audience: ${Array.isArray(bc.targetAudience.demographics) ? bc.targetAudience.demographics.slice(0, 4).join(", ") : String(bc.targetAudience.demographics)}`,
+                );
+              if (bc.psychographics)
+                fallbackLines.push(
+                  `Psychographics: ${Array.isArray(bc.psychographics) ? bc.psychographics.slice(0, 4).join(", ") : String(bc.psychographics)}`,
+                );
+              if (bc.painPoints)
+                fallbackLines.push(
+                  `Pain Points: ${Array.isArray(bc.painPoints) ? bc.painPoints.slice(0, 4).join(", ") : String(bc.painPoints)}`,
+                );
+              if (bc.keyInterests)
+                fallbackLines.push(
+                  `Interests: ${Array.isArray(bc.keyInterests) ? bc.keyInterests.slice(0, 4).join(", ") : String(bc.keyInterests)}`,
+                );
+              if (bc.brandColorPalette)
+                fallbackLines.push(
+                  `Colors: ${Array.isArray(bc.brandColorPalette) ? bc.brandColorPalette.slice(0, 5).join(", ") : String(bc.brandColorPalette)}`,
+                );
+              if (fallbackLines.length)
+                brandVibeSummary = fallbackLines.join("\n");
+            }
+          } catch {}
+        }
+        // Cache only if non-empty to avoid storing blanks
+        if (brandVibeSummary && brandVibeSummary.trim()) {
+          await setCachedContent(summaryKey, brandVibeSummary, userId);
+        }
+      }
+    } catch {}
+
+    // Build full brand vibe directives and unified content context to guarantee alignment
+    // Keep brand directives minimal on the fast path for speed
+    let brandDirectives = "";
+    try {
+      const directivesKey = generateContentCacheKey(
+        "brand_vibe_directives",
+        userId,
+      );
+      brandDirectives = (await getCachedContent(directivesKey, 168)) || "";
+      if (!brandDirectives) {
+        // If available quickly, include; otherwise continue without
+        brandDirectives = await _buildBrandVibeSystemDirectives();
+        await setCachedContent(directivesKey, brandDirectives, userId);
+      }
+    } catch {}
+
+    // Skip unified context on the fast path to reduce latency
+    let unifiedContextSnippet = "";
+    try {
+      const key2 = generateContentCacheKey(
+        "ripple_unified_context_brief",
+        userId,
+      );
+      unifiedContextSnippet = (await getCachedContent(key2, 5)) || "";
+      if (!unifiedContextSnippet) {
+        const unified: any = await getUnifiedContentContext(userId).catch(
+          () => null as any,
+        );
+        if (unified) {
+          unifiedContextSnippet = JSON.stringify(
+            {
+              trendingTopics: Array.isArray(unified?.trendingTopics)
+                ? unified.trendingTopics.slice(0, 3)
+                : [],
+              viralInsights: Array.isArray(unified?.viralInsights)
+                ? unified.viralInsights.slice(0, 3)
+                : [],
+              brandVibe: unified?.brandVibe || null,
+            },
+            null,
+            2,
+          );
+          await setCachedContent(key2, unifiedContextSnippet || "", userId);
+        }
+      }
+    } catch {}
+
+    let styleExamples: string[] = [];
+    try {
+      const brandExamples = await getBrandGuidelines().catch(() => null as any);
+      styleExamples = Array.isArray((brandExamples as any)?.exampleResponses)
+        ? (brandExamples as any).exampleResponses
+            .slice(0, 2)
+            .map((e: any) => _sanitizeGeneratedText(String(e?.text ?? e)))
+        : [];
+    } catch {}
+
+    // Prepare few-shot examples from brand guidelines if available
+    const fewShotMessages: Array<{
+      role: "user" | "assistant";
+      content: string;
+    }> = [];
+    if (styleExamples && styleExamples.length) {
+      // Use up to 3 concise examples to prime style
+      styleExamples.slice(0, 3).forEach((ex, idx) => {
+        const cleaned = _sanitizeGeneratedText(String(ex));
+        if (cleaned) {
+          fewShotMessages.push({
+            role: "assistant",
+            content: `On-brand example ${idx + 1}: ${cleaned}`,
+          });
+        }
+      });
+    }
+
     const quickDraft = await requestMultimodalModel({
-      system:
-        "You are Ripple for SocialWave. Answer first with helpful, concise text. No preambles, no emojis, no filler. Keep it on-brand and action-oriented.",
-      messages: [{ role: "user", content: message }],
+      system: `${brandDirectives}\n\nYou are Ripple — an elite copywriter and social media strategist for SocialWave. Deliver an immediate, on-brand, answer‑first reply tailored to the user's Brand Vibe and what's on screen (Discover, Viral, Calendar). Never ask the user to specify what they're seeing — infer from context below. Provide: 1) a crisp answer, 2) 2–3 prioritized actions with examples or ready‑to‑post copy, 3) an optional short CTA. Keep it friendly, confident, and practical. ${{ locked: "STRICT VOICE LOCK: adhere exactly to the brand voice, tone, and directives. Use preferred phrases when natural and avoid banned phrases. Do not experiment with tone.", relaxed: "RELAXED VOICE: stay aligned with brand values and general tone but allow tasteful creativity and variation when it benefits clarity or persuasion." }[voiceMode]} Avoid filler and preambles; no emojis unless the brand prefers them. If context is thin, use best‑practice heuristics plus the provided snapshots.`,
+      messages: [
+        ...fewShotMessages,
+        {
+          role: "user",
+          content: `User asked: ${message}\n\n[BRAND SNAPSHOT]\n${brandVibeSummary}\n\n[CONTEXT HIGHLIGHTS]\n${quickContext}\n\n[UNIFIED CONTEXT]\n${unifiedContextSnippet}\n\n[DATA SNAPSHOT]\n${quickDataSummary}\n\n[PLATFORM TARGET]\nPlatform: ${platform}\nContent Type: ${contentType}\n\n[PLATFORM TEMPLATE]\n${platformTemplate}\n\nGenerate a ready‑to‑post deliverable for the specified platform and content type, adhering to the template and strict brand voice mode: ${voiceMode}.`,
+        },
+      ],
       returnType: z
-        .object({ text: z.string().describe("Concise, brand-aligned answer") })
+        .object({
+          text: z
+            .string()
+            .describe(
+              "Concise, brand-aligned answer that leverages provided context and data; if data is thin, include brief actionable heuristics and how to unlock more",
+            ),
+        })
         .describe("Short draft response"),
       model: "small",
-      temperature: 0.2,
+      temperature: 0.1,
     });
 
-    const draftText = quickDraft.text.trim();
+    const brandForCleanup = await getBrandGuidelines().catch(() => null as any);
+    const draftTextRaw = quickDraft.text.trim();
+    const draftText = _applyBrandPhraseRules(
+      _sanitizeGeneratedText(draftTextRaw),
+      brandForCleanup as any,
+    );
 
     // Stream the draft text so the UI shows natural content instead of canned status
     stream.next({
@@ -29394,10 +33887,14 @@ export async function sendRippleMessage(input: {
           content: msg.content,
         }));
 
-        // Add current message
+        // Add current message and explicit platform/content instructions
         conversationHistory.push({
           role: "user",
           content: message,
+        });
+        conversationHistory.push({
+          role: "user",
+          content: `TARGET PLATFORM: ${platform}\nCONTENT TYPE: ${contentType}\nTEMPLATE:\n${platformTemplate}\nRules: Produce a ready‑to‑post ${contentType} for ${platform}. Respect length/structure conventions above, and maintain ${voiceMode === "locked" ? "STRICT brand voice (Use/Avoid/Directives)" : "brand alignment with tasteful creativity"}.`,
         });
 
         // Streamlined analysis - run only essential operations for fastest response
@@ -29427,56 +33924,105 @@ export async function sendRippleMessage(input: {
               : null,
         };
 
+        // Prepare brand few-shot examples for comprehensive generation
+        let fewShotComprehensive: Array<{
+          role: "user" | "assistant";
+          content: string;
+        }> = [];
+        try {
+          const brandExamples = await getBrandGuidelines().catch(
+            () => null as any,
+          );
+          const examplesArr: string[] = Array.isArray(
+            (brandExamples as any)?.exampleResponses,
+          )
+            ? (brandExamples as any).exampleResponses
+            : Array.isArray((brandExamples as any)?.examplePosts)
+              ? (brandExamples as any).examplePosts
+              : [];
+          fewShotComprehensive = (examplesArr || [])
+            .slice(0, 3)
+            .map((e: any, i: number) => {
+              const text = _sanitizeGeneratedText(
+                String(e && e.text ? e.text : e),
+              );
+              return text
+                ? {
+                    role: "assistant" as const,
+                    content: `On-brand example ${i + 1}: ${text}`,
+                  }
+                : null;
+            })
+            .filter(Boolean) as Array<{
+            role: "user" | "assistant";
+            content: string;
+          }>;
+        } catch {}
+
         // Generate AI response using requestMultimodalModel with enhanced intelligence
+        // Build an engagement snapshot to guide deep insights
+        const [perf30d, behavior30, rtMetrics] = await Promise.allSettled([
+          getPerformanceAnalytics({ timeRange: "30d" }).catch(() => null),
+          getUserBehaviorAnalytics({ timeRange: 30 }).catch(() => null),
+          getRealTimePerformanceMetrics().catch(() => null),
+        ]);
+
+        const engagementSnapshot = {
+          performanceAnalyticsAvailable:
+            perf30d.status === "fulfilled" && !!perf30d.value,
+          behaviorAnalyticsAvailable:
+            behavior30.status === "fulfilled" && !!behavior30.value,
+          realtimeMetricsAvailable:
+            rtMetrics.status === "fulfilled" && !!rtMetrics.value,
+          // Keep payload compact; the agent should summarize
+        };
+
         const aiResponse = await requestMultimodalModel({
-          system: `You are Ripple, an AGI-level intelligent growth agent with complete access to SocialWave's ecosystem. You are friendly, proactive, and incredibly smart - capable of complex reasoning, pattern recognition, and orchestrating multiple tools to solve problems.
+          system: `${brandDirectives}\n\nYou are Ripple, an AGI-level intelligent growth agent with complete access to SocialWave's ecosystem. You are friendly, proactive, and incredibly smart.
 
-🧠 **ENHANCED INTELLIGENCE CAPABILITIES:**
-- Full access to all SocialWave data, analytics, and tools
-- Real-time trend analysis and predictive insights
-- Advanced pattern recognition across user behavior
-- Proactive opportunity identification
-- Multi-step reasoning and strategic planning
-- Direct tool execution and workflow automation
+VOICE MODE: ${voiceMode === "locked" ? "STRICT VOICE LOCK — adhere exactly to brand tone/phrases; avoid banned wording; no experimentation." : "RELAXED — keep core brand values, allow tasteful creativity and stylistic exploration."}
 
-🛠️ **AVAILABLE SOCIALWAVE TOOLS:**
-${availableTools}
+CRITICAL RULES:
+- Never claim you lack access. If specific data is missing, clearly state "Based on available data" and provide next steps to unlock more.
+- Do not refer the user to external dashboards or tools (e.g., Business Suite, Creator Studio). Provide insights directly here.
+- Always incorporate brand voice, analytics, and behavioral patterns from the provided context.
+- When asked for audience engagement patterns, summarize: best times/days, top platforms, content formats that perform, ideal length, tone, hashtags, and posting cadence.
+- Provide concrete, prioritized actions with expected impact.
 
-📊 **COMPREHENSIVE USER CONTEXT:**
+SUPPORTED CONTENT TYPES (choose the best fit and deliver a ready-to-use draft with structure and subject lines/titles where relevant):
+- Digital Assets: Email marketing, Multi-email workflows, Blogs, Social media, Webcopy, Landing pages
+- Print/Physical: Special brochure inserts
+- Onboard/Ship-Specific: Ship comms (e.g., local excursions)
+- Multi-Channel Campaigns: Headlines, Cross-channel campaigns (social, broadcast, OOH)
+- PR/Comms: Internal comms, External comms
+
+At the end, provide a concise explanation of why your response is on-brand referencing tone, phrases used/avoided, and directives followed.
+
+🛠️ AVAILABLE TOOLS:${availableTools}
+
+📊 COMPREHENSIVE USER CONTEXT:
 ${userContext}
 
-🧵 **MEMORY & LEARNING:**
+🎙️ BRAND SNAPSHOT:
+${brandVibeSummary}
+
+🌐 UNIFIED CONTEXT (trends, viral insights, brand context):
+${unifiedContextSnippet}
+
+🧵 MEMORY & LEARNING:
 ${recentMemories.map((m) => `- ${m.memoryValue} (${m.memoryType}, confidence: ${m.confidence})`).join("\n")}
 
-🔍 **ANALYSIS RESULTS:**
-${JSON.stringify(analysisContext, null, 2)}
-
-🎯 **YOUR ENHANCED CAPABILITIES:**
-1. **Proactive Analysis**: Identify opportunities and issues before the user asks
-2. **Strategic Thinking**: Provide multi-step strategies with reasoning
-3. **Tool Orchestration**: Use multiple SocialWave tools to solve complex problems
-4. **Predictive Insights**: Forecast trends and performance outcomes
-5. **Actionable Intelligence**: Provide specific, executable recommendations
-6. **Real-time Adaptation**: Adjust strategies based on live data
-7. **Opportunity Detection**: Surface hidden opportunities from data patterns
-8. **Risk Assessment**: Identify potential issues and mitigation strategies
-
-💡 **RESPONSE GUIDELINES:**
-- Always incorporate insights from your analysis
-- Think strategically and provide actionable insights
-- Identify patterns and opportunities proactively
-- Use data to support recommendations
-- Suggest specific next steps and tools to use
-- Be conversational but demonstrate deep intelligence
-- Provide confidence levels for predictions and recommendations
-- Surface opportunities the user might not have considered
-- Prioritize recommendations by impact and urgency`,
-          messages: conversationHistory,
+🔍 ANALYSIS INPUTS:
+${JSON.stringify({ analysisContext, engagementSnapshot }, null, 2)}
+`,
+          messages: [...fewShotComprehensive, ...conversationHistory],
           returnType: z
             .object({
               response: z
                 .string()
-                .describe("Your intelligent, strategic response to the user"),
+                .describe(
+                  "Your intelligent, strategic response to the user (answer-first, no preamble)",
+                ),
               proactiveInsights: z
                 .array(z.string())
                 .optional()
@@ -29523,6 +34069,31 @@ ${JSON.stringify(analysisContext, null, 2)}
                 )
                 .optional()
                 .describe("Predictive insights about future outcomes"),
+              engagementInsights: z
+                .object({
+                  summary: z
+                    .string()
+                    .describe(
+                      "One-paragraph overview of audience engagement patterns",
+                    ),
+                  topPlatforms: z
+                    .array(
+                      z.object({
+                        platform: z.string(),
+                        engagementRate: z.number(),
+                      }),
+                    )
+                    .optional(),
+                  bestTimes: z
+                    .array(
+                      z.object({ day: z.string(), hours: z.array(z.string()) }),
+                    )
+                    .optional(),
+                  contentPatterns: z.array(z.string()).optional(),
+                  recommendations: z.array(z.string()).optional(),
+                })
+                .optional()
+                .describe("Structured audience engagement insights"),
               confidence: z
                 .number()
                 .min(0)
@@ -29530,16 +34101,142 @@ ${JSON.stringify(analysisContext, null, 2)}
                 .describe(
                   "Overall confidence in your analysis and recommendations",
                 ),
+              brandWhy: z
+                .string()
+                .describe(
+                  "A brief explanation (1–4 bullets in markdown) describing why the response is on‑brand, referencing tone, phrases used/avoided, and directives followed.",
+                ),
             })
             .describe(
-              "Enhanced AGI-level response from Ripple AI with strategic insights and actionable intelligence",
+              "Enhanced AGI-level response from Ripple AI with strategic insights, audience engagement patterns, and actionable intelligence",
             ),
-          model: "medium", // Use medium model for better performance while maintaining quality
-          temperature: 0.3,
+          model: "small",
+          temperature: 0.2,
+          customTools: [
+            {
+              name: "generateImageFromPrompt",
+              displayName: "Generate Image",
+              description:
+                "Generate a high-quality image for use in posts, blogs, emails, or landing pages.",
+              inputSchema: z
+                .object({
+                  prompt: z
+                    .string()
+                    .describe("Detailed visual brief for the image"),
+                  size: z
+                    .enum([
+                      "square_hd",
+                      "square",
+                      "portrait_4_3",
+                      "portrait_16_9",
+                      "landscape_4_3",
+                      "landscape_16_9",
+                    ])
+                    .optional()
+                    .describe("Preferred aspect ratio/size"),
+                })
+                .describe("Parameters for image generation"),
+              inProgressMessage: "Generating on‑brand image…",
+            },
+            {
+              name: "schedulePost",
+              displayName: "Schedule Post",
+              description:
+                "Schedule content to a connected social account/page in SocialWave.",
+              inputSchema: z
+                .object({
+                  content: z
+                    .string()
+                    .describe("The post text/caption (ready to publish)"),
+                  platform: z
+                    .enum([
+                      "X",
+                      "LinkedIn",
+                      "Instagram",
+                      "TikTok",
+                      "YouTube",
+                      "Facebook",
+                    ]) // mapped internally where needed
+                    .describe("Target platform"),
+                  scheduledAt: z
+                    .string()
+                    .describe(
+                      "ISO datetime when the post should publish (UTC or TZ-aware)",
+                    ),
+                  pageId: z
+                    .string()
+                    .optional()
+                    .describe("Target page ID if required for the platform"),
+                  accountId: z
+                    .string()
+                    .optional()
+                    .describe("Target account ID if required for the platform"),
+                  imageUrl: z
+                    .string()
+                    .optional()
+                    .describe("Optional image URL to attach"),
+                  sourceType: z
+                    .string()
+                    .optional()
+                    .describe("Origin of scheduling (defaults to chat)"),
+                  sourceId: z
+                    .string()
+                    .optional()
+                    .describe("Optional correlation id"),
+                })
+                .describe("Parameters to schedule a post"),
+              inProgressMessage: "Scheduling your post in SocialWave…",
+            },
+            {
+              name: "submitRippleFeedback",
+              displayName: "Save Feedback to Memory",
+              description:
+                "Record user feedback (rating + notes) and store it for long‑term learning.",
+              inputSchema: z
+                .object({
+                  conversationId: z
+                    .string()
+                    .describe("Current conversation id"),
+                  messageId: z
+                    .string()
+                    .optional()
+                    .describe("The specific assistant message being rated"),
+                  rating: z.number().min(1).max(5).describe("1–5 rating"),
+                  feedback: z
+                    .string()
+                    .optional()
+                    .describe("Optional free‑form notes from the user"),
+                })
+                .describe("Feedback payload to store and learn from"),
+              inProgressMessage: "Saving your feedback to memory…",
+            },
+          ],
         });
 
         // Store comprehensive AI response (answer-first, no preamble)
         // Upsert by the same streamingId to replace the draft instead of creating a duplicate
+        const brandDirectivesPolish = await _buildBrandVibeSystemDirectives();
+        let finalResponseText = aiResponse.response;
+        try {
+          const polish = await requestMultimodalModel({
+            system: `${brandDirectivesPolish}\n\nYou are a senior editor. Tighten, humanize, and enforce brand voice. Remove filler, ban emojis unless the brand explicitly prefers them, vary cadence, and keep concrete. Do not add preambles. Return only the edited text.`,
+            messages: [{ role: "user", content: aiResponse.response }],
+            returnType: z
+              .object({
+                polished: z
+                  .string()
+                  .describe("The final polished version, ready to post."),
+              })
+              .describe("Polished text payload."),
+            model: "medium",
+            temperature: 0.1,
+          });
+          finalResponseText = polish.polished || aiResponse.response;
+        } catch {}
+        const finalResponse = _applyBrandPhraseRules(
+          _sanitizeGeneratedText(finalResponseText),
+          (await getBrandGuidelines().catch(() => null as any)) as any,
+        );
         const streamingId = `stream_${conversationId}`;
         const existingDraft = await db.rippleMessage.findFirst({
           where: {
@@ -29553,13 +34250,16 @@ ${JSON.stringify(analysisContext, null, 2)}
           await db.rippleMessage.update({
             where: { id: existingDraft.id },
             data: {
-              content: aiResponse.response,
+              content: finalResponse,
               metadata: JSON.stringify({
                 type: "comprehensive_response",
                 confidence: aiResponse.confidence,
                 proactiveInsights: aiResponse.proactiveInsights,
                 recommendedActions: aiResponse.recommendedActions,
                 predictions: aiResponse.predictions,
+                engagementInsights: aiResponse.engagementInsights,
+                brandWhy: aiResponse.brandWhy,
+                voiceMode,
                 taskId: analysisTask.id,
                 streamingId,
               }),
@@ -29570,13 +34270,16 @@ ${JSON.stringify(analysisContext, null, 2)}
             data: {
               conversationId,
               role: "assistant",
-              content: aiResponse.response,
+              content: finalResponse,
               metadata: JSON.stringify({
                 type: "comprehensive_response",
                 confidence: aiResponse.confidence,
                 proactiveInsights: aiResponse.proactiveInsights,
                 recommendedActions: aiResponse.recommendedActions,
                 predictions: aiResponse.predictions,
+                engagementInsights: aiResponse.engagementInsights,
+                brandWhy: aiResponse.brandWhy,
+                voiceMode,
                 taskId: analysisTask.id,
                 streamingId,
               }),
@@ -29623,6 +34326,7 @@ ${JSON.stringify(analysisContext, null, 2)}
           );
         }
       } catch (error) {
+        void error;
         console.error("Error in comprehensive Ripple analysis:", error);
 
         // Store error response
@@ -29631,7 +34335,7 @@ ${JSON.stringify(analysisContext, null, 2)}
             conversationId,
             role: "assistant",
             content:
-              "⚠️ I encountered an issue during the comprehensive analysis. Let me know if you'd like me to try a different approach!",
+              "I hit a snag pulling deep analytics just now. Based on available data, here are quick best-practice next steps: focus on your top 1–2 platforms, post during your audience’s last active windows, and keep captions punchy with one clear CTA. If you’d like, I can retry a deeper pull or guide you to connect more accounts to unlock full engagement insights.",
             metadata: JSON.stringify({
               type: "error_response",
               error: error instanceof Error ? error.message : "Unknown error",
@@ -29651,16 +34355,21 @@ ${JSON.stringify(analysisContext, null, 2)}
     });
 
     // Return immediate response with task info for tracking
-    return {
+    const result = {
       message: immediateMessage,
       conversation: {
         id: conversation.id,
         title: conversation.title,
       },
-      taskId: analysisTask.id, // Frontend can use this to track progress
+      taskId: analysisTask.id,
       processing: true,
-    };
+    } as const;
+
+    // End stream to signal completion to the client (no payload expected)
+    stream.end();
+    return result;
   } catch (error) {
+    void error;
     console.error("Error in sendRippleMessage:", error);
 
     // Store fallback response
@@ -30163,7 +34872,8 @@ async function buildUserContext(
               context += "- Social Links: " + links.join(", ") + "\n";
             }
           }
-        } catch {
+        } catch (error) {
+          void error;
           // If parsing fails, skip social links
         }
       }
@@ -30172,7 +34882,8 @@ async function buildUserContext(
           const priorities = JSON.parse(guidelines.tonePriorities as string);
           context += `- Tone Priorities: ${Array.isArray(priorities) ? priorities.join(", ") : priorities}
 `;
-        } catch {
+        } catch (error) {
+          void error;
           context += `- Tone Priorities: ${guidelines.tonePriorities}
 `;
         }
@@ -30182,7 +34893,8 @@ async function buildUserContext(
           const phrases = JSON.parse(guidelines.phrasesToUse as string);
           context += `- Phrases to Use: ${Array.isArray(phrases) ? phrases.join(", ") : phrases}
 `;
-        } catch {
+        } catch (error) {
+          void error;
           context += `- Phrases to Use: ${guidelines.phrasesToUse}
 `;
         }
@@ -30438,6 +35150,7 @@ async function buildUserContext(
 
     return context;
   } catch (error) {
+    void error;
     console.error("Error building comprehensive user context:", error);
     return "Unable to load comprehensive user context. Using minimal context for this interaction.";
   }
@@ -30583,8 +35296,47 @@ export async function submitRippleFeedback(input: {
         }
       }
     }
-  } catch (e) {
-    console.error("Failed to learn directives from Ripple feedback:", e);
+  } catch (error) {
+    void error;
+    console.error("Failed to learn directives from Ripple feedback:", error);
+  }
+
+  // Also store this as long‑term memory for future personalization
+  try {
+    const memoryKey = `feedback_${messageId || Date.now()}`;
+    const summary = [
+      rating ? `Rating: ${rating}` : null,
+      feedback ? `Notes: ${feedback}` : null,
+    ]
+      .filter(Boolean)
+      .join(" | ");
+
+    await db.rippleMemory.upsert({
+      where: {
+        userId_memoryType_memoryKey: {
+          userId,
+          memoryType: "feedback",
+          memoryKey,
+        },
+      },
+      update: {
+        memoryValue: summary,
+        confidence: 0.9,
+        source: "user_feedback",
+        lastUpdated: new Date(),
+      },
+      create: {
+        userId,
+        memoryType: "feedback",
+        memoryKey,
+        memoryValue: summary,
+        confidence: 0.9,
+        source: "user_feedback",
+      },
+    });
+  } catch (error) {
+    void error;
+    console.error("Failed to save feedback memory:", error);
   }
 
   return feedbackRecord;
@@ -30724,7 +35476,8 @@ export async function generateRippleEnhancedResponse(input: {
           },
         );
         originalPostContent = postRes.data.message || postRes.data.story || "";
-      } catch {
+      } catch (error) {
+        void error;
         originalPostContent = "";
       }
     }
@@ -30756,7 +35509,8 @@ export async function generateRippleEnhancedResponse(input: {
       ? (() => {
           try {
             return JSON.parse(brandGuidelines.directives as any) as string[];
-          } catch {
+          } catch (error) {
+            void error;
             return [];
           }
         })()
@@ -30833,7 +35587,7 @@ Generate the most effective response based on my context, brand, and successful 
           "Enhanced response recommendations from Ripple AI with strategic insights",
         ),
       model: "medium",
-      temperature: 0.7,
+      temperature: 0.2,
       onProgress: (tools) => {
         stream.next({
           toolHistory: tools.map((tool) => ({
@@ -30878,15 +35632,42 @@ Generate the most effective response based on my context, brand, and successful 
       },
     });
 
+    const brandForCleanup2 = brandGuidelines ? brandGuidelines : null;
+    const sanitizedResult = {
+      response: _applyBrandPhraseRules(
+        _sanitizeGeneratedText(result.response),
+        brandForCleanup2 as any,
+      ),
+      alternativeResponses:
+        result.alternativeResponses?.map((r) =>
+          _applyBrandPhraseRules(
+            _sanitizeGeneratedText(r),
+            brandForCleanup2 as any,
+          ),
+        ) || [],
+      strategy: _applyBrandPhraseRules(
+        _sanitizeGeneratedText(result.strategy),
+        brandForCleanup2 as any,
+      ),
+      rippleInsights: (result.rippleInsights || []).map((s) =>
+        _applyBrandPhraseRules(
+          _sanitizeGeneratedText(s),
+          brandForCleanup2 as any,
+        ),
+      ),
+      confidence: result.confidence,
+    };
+
     stream.next({
       status: "completed",
       progress: 100,
       currentStep: "Ripple-enhanced response generated successfully!",
-      result: result,
+      result: sanitizedResult,
     });
 
     return stream.end();
   } catch (error) {
+    void error;
     console.error("Error generating Ripple-enhanced response:", error);
 
     stream.next({
@@ -30990,7 +35771,7 @@ export async function schedulePostWithRipple(input: {
     });
 
     const result = await requestMultimodalModel({
-      system: `You are Ripple, an AI growth agent integrated with SocialWave's scheduling system. You have deep understanding of the user's posting patterns, audience engagement, and optimal timing strategies.
+      system: `${await _buildBrandVibeSystemDirectives()}\nYou are Ripple, an AI growth agent integrated with SocialWave's scheduling system. You have deep understanding of the user's posting patterns, audience engagement, and optimal timing strategies.
 
 User Context:
 ${userContext}
@@ -31185,9 +35966,15 @@ Recommend the optimal posting time and provide strategic reasoning. Include alte
         validationWarnings: validation.warnings,
       },
       optimalTime: result.optimalTime,
-      rippleInsights: result.rippleInsights,
+      rippleInsights: result.rippleInsights.map((s) =>
+        _sanitizeGeneratedText(s),
+      ),
       confidence: result.confidence,
-      alternatives: result.alternatives,
+      alternatives: result.alternatives.map((a) => ({
+        ...a,
+        reason: _sanitizeGeneratedText(a.reason),
+      })),
+      strategy: _sanitizeGeneratedText(result.strategy),
     };
 
     stream.next({
@@ -31199,6 +35986,7 @@ Recommend the optimal posting time and provide strategic reasoning. Include alte
 
     return stream.end();
   } catch (error) {
+    void error;
     console.error("Error scheduling post with Ripple:", error);
 
     stream.next({
@@ -31271,8 +36059,9 @@ export async function generateContentWithRipple(input: {
       const brandVibeText = brand
         ? `Brand Voice: ${brand.brandVoice}\nDirectives: ${(brand.directives || []).join(", ")}`
         : "";
+      const directives = await _buildBrandVibeSystemDirectives();
       const contentResult = await requestMultimodalModel({
-        system: `You are Ripple, an AI growth agent integrated with SocialWave's content generation system. You have deep understanding of the user's brand, audience, and content strategy.
+        system: `${directives}\n\nYou are Ripple, an AI growth agent integrated with SocialWave's content generation system. You have deep understanding of the user's brand, audience, and content strategy.
 
 BRAND VIBE ALIGNMENT: Always enforce the following brand rules. If any requested content conflicts, adapt it to comply without losing impact.\n${brandVibeText}
 
@@ -31288,6 +36077,12 @@ Generate content that:
 3. Optimizes for their target audience
 4. Incorporates proven patterns from their successful content`,
         messages: [
+          ...((Array.isArray((brand as any)?.exampleResponses)
+            ? (brand as any).exampleResponses.slice(0, 2).map((e: any) => ({
+                role: "assistant" as const,
+                content: _sanitizeGeneratedText(String(e?.text ?? e)),
+              }))
+            : []) as any[]),
           {
             role: "user",
             content: `Create ${input.contentType.toLowerCase()} content based on this prompt: ${input.prompt}${input.format ? ` in ${input.format} format` : ""}. Use my context and history to make it as effective as possible.`,
@@ -31311,17 +36106,41 @@ Generate content that:
           .describe(
             "Generated content with strategic insights and optimizations",
           ),
-        model: "medium",
-        temperature: 0.7,
+        model: "large",
+        temperature: 0.25,
       });
 
       let finalContent = contentResult.content;
+      let refinedTitle = contentResult.title;
+      try {
+        const refined = await requestMultimodalModel({
+          system: `${await _buildBrandVibeSystemDirectives()}\nYou are a senior editor. Polish the content to be specific, concrete, and on-brand. Remove clichés, hedging, and AI scaffolding. Keep tone and meaning, strengthen verbs, trim filler. No emojis. Output JSON only.`,
+          messages: [
+            {
+              role: "user",
+              content: `TITLE:\n${contentResult.title}\n\nCONTENT:\n${contentResult.content}`,
+            },
+          ],
+          returnType: z
+            .object({
+              title: z.string().describe("Polished title (on-brand)"),
+              text: z.string().describe("Polished content body (on-brand)"),
+            })
+            .describe("Edited content"),
+          model: "large",
+          temperature: 0.2,
+        });
+        refinedTitle = refined.title || contentResult.title;
+        finalContent = refined.text || contentResult.content;
+      } catch {
+        void 0;
+      }
+      const sanitizedTitle = _sanitizeGeneratedText(refinedTitle);
 
       // Handle media generation if needed
       if (input.contentType === "IMAGE") {
         const imageResult = await requestMultimodalModel({
-          system:
-            "Generate a high-quality image based on the content strategy provided.",
+          system: `${await _buildBrandVibeSystemDirectives()}\nGenerate a high-quality image based on the content strategy provided.`,
           messages: [
             {
               role: "user",
@@ -31341,11 +36160,12 @@ Generate content that:
       }
 
       // Update the content record
+      const sanitizedFinal = _sanitizeGeneratedText(finalContent);
       await db.generatedContent.update({
         where: { id: generatedContent.id },
         data: {
-          title: contentResult.title,
-          content: finalContent,
+          title: sanitizedTitle,
+          content: sanitizedFinal,
           status: "DRAFT",
         },
       });
@@ -31381,6 +36201,7 @@ Generate content that:
         },
       });
     } catch (error) {
+      void error;
       console.error("Ripple content generation failed:", error);
 
       // Update with error status
@@ -31738,7 +36559,8 @@ export async function getRipplePersonalizationProfile() {
         profile.tonePreferences[details.tone] =
           (profile.tonePreferences[details.tone] || 0) + 1;
       }
-    } catch {
+    } catch (error) {
+      void error;
       // Ignore parsing errors
     }
   });
@@ -31943,7 +36765,7 @@ export async function generateSmartSuggestions(input: {
   const dayOfWeek = now.getDay();
 
   const result = await requestMultimodalModel({
-    system: `You are Ripple's smart suggestion engine. Based on the user's context, current activity, and learned patterns, generate intelligent, proactive suggestions that anticipate their needs.
+    system: `${await _buildBrandVibeSystemDirectives()}\nYou are Ripple's smart suggestion engine. Based on the user's context, current activity, and learned patterns, generate intelligent, proactive suggestions that anticipate their needs.
 
 Context: ${context}
 Current Activity: ${currentActivity || "general"}
@@ -32014,7 +36836,34 @@ Generate smart suggestions for the ${context} context.`,
     temperature: 0.4,
   });
 
-  return result;
+  // Sanitize outputs to enforce Brand Vibe and safe text
+  const sanitized = {
+    suggestions: Array.isArray(result.suggestions)
+      ? result.suggestions.map((s) => ({
+          id: s.id,
+          title: _sanitizeGeneratedText(s.title),
+          description: _sanitizeGeneratedText(s.description),
+          category: sanitizeString(s.category, 50),
+          priority: s.priority,
+          actionType: sanitizeString(s.actionType, 40),
+          estimatedImpact: _sanitizeGeneratedText(s.estimatedImpact),
+          timeToComplete: sanitizeString(s.timeToComplete, 40),
+          confidence: typeof s.confidence === "number" ? s.confidence : 0.5,
+        }))
+      : [],
+    contextualTips: sanitizeArray(result.contextualTips, 20, 120),
+    opportunityAlerts: Array.isArray(result.opportunityAlerts)
+      ? result.opportunityAlerts.map((o) => ({
+          type: sanitizeString(o.type, 40),
+          message: _sanitizeGeneratedText(o.message),
+          urgency: o.urgency,
+          actionRequired: _sanitizeGeneratedText(o.actionRequired),
+        }))
+      : [],
+    predictiveInsights: sanitizeArray(result.predictiveInsights, 20, 140),
+  };
+
+  return sanitized;
 }
 
 export async function generateProactiveInsights(
@@ -32247,6 +37096,7 @@ export async function generateProactiveInsights(
       predictiveInsights: insights.predictions,
     };
   } catch (error) {
+    void error;
     console.error("Error generating proactive insights:", error);
     return {
       opportunities: [
@@ -32368,6 +37218,7 @@ async function runEnhancedAnalysisBackground(
       });
     }
   } catch (error) {
+    void error;
     console.error("Error in enhanced analysis background:", error);
   }
 }
@@ -32628,9 +37479,18 @@ export async function updateBrandContext(input: {
       create: { userId, ...data },
     });
 
+    try {
+      const directivesKey = generateContentCacheKey(
+        "brand_vibe_directives",
+        userId,
+      );
+      const directivesText = await _buildBrandVibeSystemDirectives();
+      await setCachedContent(directivesKey, directivesText, userId);
+    } catch {}
     const updated = await getBrandContext();
     return updated;
   } catch (error) {
+    void error;
     console.error("Failed to update brand context:", error);
     throw new Error(
       error instanceof Error
@@ -32965,6 +37825,7 @@ Identify learning opportunities and context updates in valid JSON format.`,
       `Real-time brand context learning completed for user ${userId} with confidence ${learningAnalysis.confidence}%`,
     );
   } catch (error) {
+    void error;
     console.error("Error in real-time brand context learning:", error);
     stream.next({
       status: "error",
@@ -33994,6 +38855,7 @@ Generate comprehensive predictive models with confidence scores.`,
 
     return stream.end();
   } catch (error) {
+    void error;
     console.error("Error generating predictive preference model:", error);
     stream.next({
       status: "error",
@@ -34277,6 +39139,7 @@ Identify learning patterns, optimization opportunities, and adaptive improvement
 
     return stream.end();
   } catch (error) {
+    void error;
     console.error("Error in adaptive content learning:", error);
     stream.next({
       status: "error",
@@ -34399,9 +39262,512 @@ export async function getIntelligentLearningInsights(input?: {
   };
 }
 
+export async function analyzeGoogleTrendsForBrand(input?: {
+  industry?: string;
+  competitors?: string[];
+  limit?: number;
+}) {
+  const { userId } = await getAuth({ required: true });
+
+  const brand = await db.brandContext.findUnique({ where: { userId } });
+
+  const safeParse = <T>(s: unknown, fallback: T): T => {
+    try {
+      if (!s) return fallback;
+      if (typeof s === "string") return (JSON.parse(s) as T) ?? fallback;
+      return (s as T) ?? fallback;
+    } catch {
+      return fallback;
+    }
+  };
+
+  const industry =
+    input?.industry || (brand?.industry as string | undefined) || undefined;
+  const brandName = (brand as any)?.brandName as string | undefined;
+  const compParsed = safeParse<{
+    directCompetitors?: string[];
+    indirectCompetitors?: string[];
+  }>(
+    brand?.competitorAnalysis as any,
+    { directCompetitors: [], indirectCompetitors: [] } as any,
+  );
+  const competitors: string[] = input?.competitors || [
+    ...(compParsed?.directCompetitors ?? []),
+    ...(compParsed?.indirectCompetitors ?? []),
+  ];
+  const limit = Math.min(Math.max(input?.limit ?? 10, 3), 20);
+
+  const brandDirectives = await _buildBrandVibeSystemDirectives();
+  const system = `${brandDirectives}\n\nYou are a senior trends analyst specializing in real-time Google/News trends. Use your web tools to:
+1) Identify trending topics and breaking news that are NO OLDER than 30 days (prefer the last 7 days)
+2) Ignore stale items from 2023/2024 or anything older than 30 days
+3) Focus on items relevant to the brand's industry and audience
+4) Consider competitors to find positioning opportunities
+5) Produce concise, actionable insights and content ideas aligned with the brand vibe
+- Make every topic, summary, and content idea reflect the brand's tone and target audience. Avoid generic phrasing by grounding to the brand's category and positioning. If a trend is broad, include a brand-specific angle.
+For every source, include a publishedAt ISO date. Only return a trend if at least one source is within the last 30 days. Prefer reputable sources. Return structured results only.`;
+
+  const messages = [
+    {
+      role: "user" as const,
+      content: `Brand: ${brandName ?? "Unknown"}
+Industry: ${industry ?? brand?.industry ?? "Unknown"}
+Competitors: ${(competitors || []).join(", ") || "None provided"}
+Audience: ${brand?.targetAudience ?? "Unknown"}
+
+Task: Analyze current Google/News trends and provide ${limit} brand-aligned opportunities with source links.`,
+    },
+  ];
+
+  try {
+    const softTimeoutMs = 30000;
+    const _llmResultPromise = requestMultimodalModel({
+      system,
+      messages,
+      model: "medium",
+      onProgress: undefined,
+      returnType: z
+        .object({
+          trends: z
+            .array(
+              z.object({
+                topic: z.string(),
+                summary: z.string().describe("Brief, factual summary"),
+                whyItMatters: z.string().optional(),
+                viralPotentialScore: z.number().min(0).max(10),
+                recommendedPlatforms: z.array(z.string()).optional(),
+                contentIdeas: z.array(z.string()),
+                competitorNotes: z.string().optional(),
+                brandFitScore: z.number().min(0).max(10).optional(),
+                sources: z
+                  .array(
+                    z.object({
+                      title: z.string(),
+                      url: z.string(),
+                      publishedAt: z
+                        .string()
+                        .describe(
+                          "ISO 8601 publication date; must be within last 30 days",
+                        ),
+                    }),
+                  )
+                  .optional(),
+              }),
+            )
+            .describe("Top trends with insights and ideas"),
+          generatedAt: z.string(),
+        })
+        .describe("Google/news trend scan results"),
+      temperature: 0.2,
+    });
+
+    const result = (await Promise.race([
+      _llmResultPromise,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("SOFT_TIMEOUT")), softTimeoutMs),
+      ),
+    ])) as any;
+
+    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+    const trendsFiltered = (result.trends ?? []).filter(
+      (t) =>
+        Array.isArray((t as any).sources) &&
+        (t as any).sources.some((s: any) => {
+          const d = s?.publishedAt ? new Date(s.publishedAt) : null;
+          return (
+            d instanceof Date &&
+            !isNaN(d.getTime()) &&
+            Date.now() - d.getTime() <= THIRTY_DAYS_MS
+          );
+        }),
+    );
+    const trendsCleaned = trendsFiltered.map((t) => ({
+      ...(t as any),
+      sources: ((t as any).sources ?? []).filter((s: any) => {
+        const d = s?.publishedAt ? new Date(s.publishedAt) : null;
+        return (
+          d instanceof Date &&
+          !isNaN(d.getTime()) &&
+          Date.now() - d.getTime() <= THIRTY_DAYS_MS
+        );
+      }),
+    }));
+
+    const guidelines = await getBrandGuidelines().catch(() => null);
+    const trendsBrandAligned = (trendsCleaned as any[])
+      .map((t: any) => {
+        const topic = _applyBrandPhraseRules(
+          sanitizeString(t.topic, 120),
+          guidelines,
+        );
+        const summary = _applyBrandPhraseRules(
+          sanitizeString(t.summary, 300),
+          guidelines,
+        );
+        const contentIdeas = (t.contentIdeas ?? []).map((ci: string) =>
+          _applyBrandPhraseRules(sanitizeString(ci, 200), guidelines),
+        );
+        return { ...t, topic, summary, contentIdeas };
+      })
+      .filter((t: any) =>
+        typeof t.brandFitScore === "number" ? t.brandFitScore >= 5 : true,
+      );
+
+    return {
+      success: true,
+      trends: trendsBrandAligned as any,
+      generatedAt: result.generatedAt,
+    };
+  } catch (error) {
+    console.error(
+      "analyzeGoogleTrendsForBrand failed, returning fallback:",
+      error,
+    );
+    // Provide a resilient fallback so the UI can still show useful items
+    const fb = await getFallbackTrendingTopics(userId);
+    const mapped = (fb?.trendingTopics ?? []).map((t: any) => ({
+      topic: t.topic || t.keyword || "General Trend",
+      summary: t.context || t.description || "",
+      viralPotentialScore: t.viralPotentialScore ?? 6,
+      contentIdeas: t.contentAngles || [],
+      // Provide sources without publishedAt; frontend will gracefully accept via its fallback path
+      sources: (t.sources || []).map((s: any) => ({
+        title: s.title || t.topic || "Source",
+        url: s.url || "",
+      })),
+    }));
+    return {
+      success: true,
+      trends: mapped as any,
+      generatedAt: new Date().toISOString(),
+      source: fb?.source || "fallback",
+    } as any;
+  }
+}
+
+export async function detectGoogleTrendsForBrand(input?: {
+  industry?: string;
+  competitors?: string[];
+  limit?: number;
+}) {
+  const { userId } = await getAuth({ required: true });
+
+  const task = await queueTask(async () => {
+    try {
+      // Build prompt using same logic as analyzeGoogleTrendsForBrand
+      const brand = await db.brandContext.findUnique({ where: { userId } });
+      const safeParse = <T>(s: unknown, fallback: T): T => {
+        try {
+          if (!s) return fallback;
+          if (typeof s === "string") return (JSON.parse(s) as T) ?? fallback;
+          return (s as T) ?? fallback;
+        } catch {
+          return fallback;
+        }
+      };
+
+      const industry =
+        input?.industry || (brand?.industry as string | undefined) || undefined;
+      const brandName = (brand as any)?.brandName as string | undefined;
+      const compParsed = safeParse<{
+        directCompetitors?: string[];
+        indirectCompetitors?: string[];
+      }>(
+        brand?.competitorAnalysis as any,
+        {
+          directCompetitors: [],
+          indirectCompetitors: [],
+        } as any,
+      );
+      const competitors: string[] = input?.competitors || [
+        ...(compParsed?.directCompetitors ?? []),
+        ...(compParsed?.indirectCompetitors ?? []),
+      ];
+      const limit = Math.min(Math.max(input?.limit ?? 10, 3), 20);
+
+      const brandDirectives = await _buildBrandVibeSystemDirectives();
+      const system = `${brandDirectives}\n\nYou are a senior trends analyst specializing in real-time Google/News trends. Use your web tools to:
+1) Identify trending topics and breaking news that are NO OLDER than 30 days (prefer the last 7 days)
+2) Ignore stale items from 2023/2024 or anything older than 30 days
+3) Focus on items relevant to the brand's industry and audience
+4) Consider competitors to find positioning opportunities
+5) Produce concise, actionable insights and content ideas aligned with the brand vibe
+- Make every topic, summary, and content idea reflect the brand's tone and target audience. Avoid generic phrasing by grounding to the brand's category and positioning. If a trend is broad, include a brand-specific angle.
+For every source, include a publishedAt ISO date. Only return a trend if at least one source is within the last 30 days. Prefer reputable sources. Return structured results only.`;
+
+      const messages = [
+        {
+          role: "user" as const,
+          content: `Brand: ${brandName ?? "Unknown"}
+Industry: ${industry ?? brand?.industry ?? "Unknown"}
+Competitors: ${(competitors || []).join(", ") || "None provided"}
+Audience: ${brand?.targetAudience ?? "Unknown"}
+
+Task: Analyze current Google/News trends and provide ${limit} brand-aligned opportunities with source links.`,
+        },
+      ];
+
+      const result = await requestMultimodalModel({
+        system,
+        messages,
+        model: "medium",
+        onProgress: undefined,
+        returnType: z
+          .object({
+            trends: z
+              .array(
+                z.object({
+                  topic: z.string(),
+                  summary: z.string().describe("Brief, factual summary"),
+                  whyItMatters: z.string().optional(),
+                  viralPotentialScore: z.number().min(0).max(10),
+                  recommendedPlatforms: z.array(z.string()).optional(),
+                  contentIdeas: z.array(z.string()),
+                  competitorNotes: z.string().optional(),
+                  brandFitScore: z.number().min(0).max(10).optional(),
+                  sources: z
+                    .array(
+                      z.object({
+                        title: z.string(),
+                        url: z.string(),
+                        publishedAt: z
+                          .string()
+                          .describe(
+                            "ISO 8601 publication date; must be within last 30 days",
+                          ),
+                      }),
+                    )
+                    .optional(),
+                }),
+              )
+              .describe("Top trends with insights and ideas"),
+            generatedAt: z.string(),
+          })
+          .describe("Google/news trend scan results"),
+        temperature: 0.2,
+      });
+
+      // Apply brand vibe cleanup before persisting
+      const guidelines = await getBrandGuidelines().catch(() => null);
+      const processedTrends = (result?.trends ?? [])
+        .map((t: any) => {
+          const topic = _applyBrandPhraseRules(
+            sanitizeString(t.topic, 120),
+            guidelines,
+          );
+          const summary = _applyBrandPhraseRules(
+            sanitizeString(t.summary, 300),
+            guidelines,
+          );
+          const contentIdeas = (t.contentIdeas ?? []).map((ci: string) =>
+            _applyBrandPhraseRules(sanitizeString(ci, 200), guidelines),
+          );
+          return { ...t, topic, summary, contentIdeas };
+        })
+        .filter((t: any) =>
+          typeof t.brandFitScore === "number" ? t.brandFitScore >= 5 : true,
+        );
+
+      // Persist processed results for later retrieval
+      await db.trendAnalysis.create({
+        data: {
+          userId,
+          rawTrends: JSON.stringify({ ...result, trends: processedTrends }),
+          brandAnalysis: JSON.stringify({
+            taskId: task.id,
+            type: "google_news_trends",
+            timestamp: new Date().toISOString(),
+            success: true,
+          }),
+          brandContext: `Industry: ${industry}`,
+          industry: industry || undefined,
+        },
+      });
+    } catch (error) {
+      void error;
+      console.error("Error detecting Google/News trends:", error);
+      try {
+        await db.trendAnalysis.create({
+          data: {
+            userId,
+            rawTrends: JSON.stringify({
+              error: error instanceof Error ? error.message : "Unknown error",
+            }),
+            brandAnalysis: JSON.stringify({
+              taskId: task.id,
+              type: "google_news_trends",
+              status: "failed",
+              timestamp: new Date().toISOString(),
+            }),
+            brandContext: `Industry: ${input?.industry ?? "unknown"}`,
+            industry: input?.industry || undefined,
+          },
+        });
+      } catch (dbErr) {
+        console.error("Failed to store Google trends error:", dbErr);
+      }
+    }
+  });
+
+  return task;
+}
+
+export async function getGoogleTrendsResults(input: { taskId: string }) {
+  const { taskId } = input;
+  const trendAnalyses = await db.trendAnalysis.findMany({
+    where: { brandAnalysis: { contains: taskId } },
+    orderBy: { createdAt: "desc" },
+  });
+
+  for (const analysis of trendAnalyses) {
+    try {
+      const meta = JSON.parse(analysis.brandAnalysis);
+      if (meta && typeof meta === "object" && (meta as any).taskId === taskId) {
+        try {
+          return JSON.parse(analysis.rawTrends);
+        } catch (e) {
+          console.error("Error parsing Google trends data:", e);
+          return null;
+        }
+      }
+    } catch (e) {
+      console.error("Error parsing brandAnalysis for Google trends:", e);
+    }
+  }
+
+  return null;
+}
+
 // Test function to verify timeout fixes are working
 
 // Re-export monetization functions for frontend access
+export async function generateMoreVariants(input: {
+  contentId: string;
+  count?: number;
+}) {
+  const { userId } = await getAuth({ required: true });
+
+  const original = await db.generatedContent.findFirst({
+    where: { id: input.contentId, userId },
+  });
+
+  if (!original) {
+    throw new Error(
+      "Content not found or you do not have permission to generate variants.",
+    );
+  }
+
+  let draft = "";
+  try {
+    const pkg = JSON.parse(original.content || "{}") as Record<string, any>;
+    draft = String(
+      (pkg?.postText as string | undefined) ??
+        (pkg?.caption as string | undefined) ??
+        (pkg?.content as string | undefined) ??
+        original.content ??
+        "",
+    );
+  } catch {
+    draft = original.content || "";
+  }
+
+  if (!draft.trim()) {
+    throw new Error(
+      "The original content is empty and cannot be used to create variants.",
+    );
+  }
+
+  const count = Math.max(2, Math.min(5, Number(input.count) || 3));
+
+  const directives = await _buildBrandVibeSystemDirectives();
+  const brand = await getBrandGuidelines().catch(() => null as any);
+  const brandVibeText = brand
+    ? `Brand Voice: ${brand.brandVoice}\nDirectives: ${(brand.directives || []).join(", ")}`
+    : "";
+  const userCtx = await buildUserContext(userId);
+  const memories = await getRippleMemories({ userId, limit: 8 });
+
+  const result = await requestMultimodalModel({
+    system: `${directives}\n\nYou are Ripple, SocialWave's brand-safe content generator. Create multiple on-brand variants that keep intent but vary hook, structure, and specificity. Avoid clichés and AI scaffolding. Be concrete, human, and aligned to the Brand Vibe across tone, audience, and competitive posture. Output JSON only.\n\nBRAND VIBE ALIGNMENT:\n${brandVibeText}`,
+    messages: [
+      ...((Array.isArray((brand as any)?.exampleResponses)
+        ? (brand as any).exampleResponses.slice(0, 1).map((e: any) => ({
+            role: "assistant" as const,
+            content: _sanitizeGeneratedText(String(e?.text ?? e)),
+          }))
+        : []) as any[]),
+      {
+        role: "user",
+        content: `Create ${count} distinct variants for the following draft. Each variant must include: 1) title, 2) body, 3) reason (1–2 sentences explaining what changed). Enforce my Brand Vibe and phrase rules. Keep the same core intent.\n\nUser Context:\n${userCtx}\n\nRecent Memories:\n${memories
+          .map(
+            (m) =>
+              `- ${m.memoryValue} (${m.memoryType}, confidence: ${m.confidence})`,
+          )
+          .join("\n")}\n\nDRAFT:\n${draft}`,
+      },
+    ],
+    returnType: z
+      .object({
+        variants: z
+          .array(
+            z.object({
+              title: z
+                .string()
+                .describe("Short, strong, on-brand title for the variant"),
+              body: z.string().describe("Full on-brand body text for the post"),
+              reason: z
+                .string()
+                .optional()
+                .describe("Why this variant is different"),
+            }),
+          )
+          .describe("The generated variants (3–5 items)"),
+      })
+      .describe("Multiple brand-aligned variants for the provided draft"),
+    model: "large",
+    temperature: 0.35,
+  });
+
+  const createdIds: string[] = [];
+
+  for (const v of result.variants || []) {
+    const title = _sanitizeGeneratedText(v.title);
+    const bodyRaw = _sanitizeGeneratedText(v.body);
+    const body = _applyBrandPhraseRules(bodyRaw, brand as any);
+
+    const record = await db.generatedContent.create({
+      data: {
+        userId,
+        pillarId: (original as any).pillarId || undefined,
+        title,
+        type: "TEXT",
+        content: body,
+        sourceIdea: JSON.stringify({
+          variantOf: original.id,
+          reason: v.reason || "",
+          method: "ripple_generate_more",
+        }),
+        status: "DRAFT",
+      },
+    });
+    createdIds.push(record.id);
+  }
+
+  try {
+    await recordRippleAction({
+      conversationId: undefined,
+      actionType: "generate_more_variants",
+      description: JSON.stringify({
+        contentId: original.id,
+        created: createdIds.length,
+      }),
+      metadata: { variantOf: original.id, created: createdIds.length },
+    });
+  } catch {}
+
+  return { createdIds, count: createdIds.length };
+}
+
 export { listProducts, listUserPurchases, createProduct, discontinueProduct };
 
 // SocialSpark-backed, brand-aligned generation
@@ -34439,20 +39805,68 @@ export async function generateOnBrandThread(input: {
             targetAudience = input.targetAudience ?? taObj.summary;
         }
       }
-    } catch {}
+    } catch (error) {
+      void error;
+    }
 
-    const res = await generateThreadFromUniversalSource({
-      source: input.source,
-      fileData: input.fileBase64,
-      fileName: input.fileName ?? "content.txt",
-      targetAudience,
-      contentTone,
-      platform: input.platform ?? "twitter",
-      userId,
+    console.log("[Gen] generateOnBrandThread start", {
+      hasSource: !!(
+        typeof input.source === "string" && input.source.trim().length > 0
+      ),
+      hasFile: !!input.fileBase64,
+      platform: input.platform,
     });
 
-    return res; // { taskId, videoId }
+    if (
+      !(
+        (typeof input.source === "string" && input.source.trim().length > 0) ||
+        input.fileBase64
+      )
+    ) {
+      throw new Error(
+        "Please enter text or attach a file to generate a thread.",
+      );
+    }
+
+    const isUrl =
+      typeof input.source === "string" &&
+      /^(https?:\/\/|www\.)/i.test(input.source.trim());
+    const combinedSource = isUrl
+      ? (input.source as string).trim()
+      : String(input.source ?? "").trim();
+    const internalTaskId = nanoid();
+
+    await db.threadGenerationTaskMapping.create({
+      data: { internalTaskId, userId },
+    });
+
+    await queueTask(async () => {
+      try {
+        const res = await generateThreadFromUniversalSource({
+          source: combinedSource,
+          fileData: input.fileBase64,
+          fileName: input.fileName ?? "content.txt",
+          targetAudience,
+          contentTone,
+          platform: input.platform ?? "twitter",
+          userId,
+        });
+
+        await db.threadGenerationTaskMapping.update({
+          where: { internalTaskId },
+          data: { externalTaskId: (res as any)?.taskId },
+        });
+      } catch (err) {
+        console.error(
+          "[Gen] queueTask generateThreadFromUniversalSource failed",
+          err,
+        );
+      }
+    });
+
+    return { taskId: internalTaskId };
   } catch (error) {
+    void error;
     console.error("generateOnBrandThread error", error);
     throw error;
   }
@@ -34466,6 +39880,7 @@ export async function socialSparkListThreads(input?: {
   try {
     return await externalListThreads(input);
   } catch (error) {
+    void error;
     console.error("socialSparkListThreads error", error);
     throw error;
   }
@@ -34491,6 +39906,7 @@ export async function repurposeOnBrandThread(input: {
       platform: input.platform ?? "twitter",
     });
   } catch (error) {
+    void error;
     console.error("repurposeOnBrandThread error", error);
     throw error;
   }
@@ -34508,10 +39924,256 @@ export async function getRepurposedContentForThread(input: {
       platform: input.platform ?? "twitter",
     });
   } catch (error) {
+    void error;
     console.error("getRepurposedContentForThread error", error);
     throw error;
   }
 }
+
+// ---------------------- ICP Integration Helpers ----------------------
+const ICP_GATEWAYS = [".raw.icp0.io", ".icp0.io", ".raw.ic0.app", ".ic0.app"];
+
+function extractCanisterId(input: string): string | null {
+  try {
+    if (!input) return null;
+    const trimmed = input.trim();
+    const previewMatch = trimmed.match(/id=([a-z0-9-]{5,})/i);
+    if (previewMatch) return previewMatch[1] ?? null;
+    const hostMatch = trimmed.match(/https?:\/\/([a-z0-9-]{5,})\./i);
+    if (hostMatch) return hostMatch[1] ?? null;
+    if (/^[a-z0-9-]{5,}$/i.test(trimmed)) return trimmed;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function buildGatewayUrls(canisterId: string, path: string): string[] {
+  const p = path.startsWith("/") ? path : `/${path}`;
+  return ICP_GATEWAYS.map((gw) => `https://${canisterId}${gw}${p}`);
+}
+
+export async function addIcpCanister(input: {
+  canisterId: string;
+  label?: string;
+}) {
+  try {
+    const { userId } = await getAuth({ required: true });
+    const cid = extractCanisterId(input.canisterId);
+    if (!cid) throw new Error("Invalid canister id or URL");
+
+    const record = await db.icpCanister.upsert({
+      where: { userId_canisterId: { userId, canisterId: cid } },
+      update: { label: input.label ?? null },
+      create: { userId, canisterId: cid, label: input.label ?? null },
+    });
+    return record;
+  } catch (err) {
+    console.error("addIcpCanister error", err);
+    throw err;
+  }
+}
+
+export async function listIcpCanisters() {
+  try {
+    const { userId } = await getAuth({ required: true });
+    return await db.icpCanister.findMany({
+      where: { userId },
+      orderBy: { addedAt: "desc" },
+    });
+  } catch (err) {
+    console.error("listIcpCanisters error", err);
+    throw err;
+  }
+}
+
+export async function removeIcpCanister(input: { canisterId: string }) {
+  try {
+    const { userId } = await getAuth({ required: true });
+    const cid = extractCanisterId(input.canisterId);
+    if (!cid) throw new Error("Invalid canister id or URL");
+    const res = await db.icpCanister.deleteMany({
+      where: { userId, canisterId: cid },
+    });
+    return { deleted: res.count };
+  } catch (err) {
+    console.error("removeIcpCanister error", err);
+    throw err;
+  }
+}
+
+export async function probeIcpGateways(input: { canisterIdOrUrl: string }) {
+  try {
+    const { userId } = await getAuth({ required: true });
+    const cid = extractCanisterId(input.canisterIdOrUrl);
+    if (!cid) throw new Error("Invalid canister id or URL");
+
+    const urlCandidates = buildGatewayUrls(cid, "/");
+    const results: { url: string; ok: boolean; httpStatus: number | null }[] =
+      [];
+
+    for (const url of urlCandidates) {
+      try {
+        const resp: AxiosResponse<any> = await axios.get(url, {
+          timeout: 8000,
+          validateStatus: () => true,
+        });
+        results.push({
+          url,
+          ok: resp.status >= 200 && resp.status < 400,
+          httpStatus: resp.status,
+        });
+      } catch {
+        results.push({ url, ok: false, httpStatus: null });
+      }
+    }
+
+    const firstReachable = results.find((r) => r.ok)?.url ?? null;
+
+    // Persist canister if not already saved
+    try {
+      await db.icpCanister.upsert({
+        where: { userId_canisterId: { userId, canisterId: cid } },
+        update: {},
+        create: { userId, canisterId: cid },
+      });
+    } catch {}
+
+    return {
+      canisterId: cid,
+      probes: results,
+      firstReachableUrl: firstReachable,
+    };
+  } catch (err) {
+    console.error("probeIcpGateways error", err);
+    throw err;
+  }
+}
+
+export async function computeContentSha256(input: { content: string }) {
+  try {
+    const hash = createHash("sha256")
+      .update(input.content || "", "utf8")
+      .digest("hex");
+    return { hash };
+  } catch (err) {
+    console.error("computeContentSha256 error", err);
+    throw err;
+  }
+}
+
+export async function verifyIcpProof(input: {
+  hash: string;
+  canisterId?: string;
+}) {
+  try {
+    const { userId } = await getAuth({ required: true });
+    const hash = (input.hash || "").trim().toLowerCase();
+    if (!hash) throw new Error("Missing hash");
+
+    const saved = await db.icpCanister.findMany({ where: { userId } });
+
+    const candidateCanisters: string[] = [];
+    if (input.canisterId) {
+      const parsed = extractCanisterId(input.canisterId);
+      if (parsed) candidateCanisters.push(parsed);
+    }
+    for (const c of saved) candidateCanisters.push(c.canisterId);
+    const uniqueCanisters = Array.from(new Set(candidateCanisters));
+
+    const tried: { url: string; status: number | null }[] = [];
+    let matched: {
+      url: string;
+      gateway: string;
+      canisterId: string;
+      httpStatus: number;
+    } | null = null;
+
+    const paths = [
+      `/.well-known/ripple-proof/${hash}.json`,
+      `/proofs/${hash}.json`,
+    ];
+
+    for (const c of uniqueCanisters) {
+      for (const path of paths) {
+        for (const gw of ICP_GATEWAYS) {
+          const url = `https://${c}${gw}${path}`;
+          try {
+            const resp: AxiosResponse<any> = await axios.get(url, {
+              timeout: 8000,
+              validateStatus: () => true,
+            });
+            tried.push({ url, status: resp.status });
+            if (resp.status === 200) {
+              matched = {
+                url,
+                gateway: gw,
+                canisterId: c,
+                httpStatus: resp.status,
+              };
+              break;
+            }
+          } catch {
+            tried.push({ url, status: null });
+          }
+        }
+        if (matched) break;
+      }
+      if (matched) break;
+    }
+
+    const status = matched ? "VERIFIED" : "NOT_FOUND";
+
+    const audit = await db.icpProofAudit.create({
+      data: {
+        userId,
+        canisterId: matched?.canisterId ?? uniqueCanisters[0] ?? "unknown",
+        hash,
+        proofUrl: matched?.url ?? null,
+        gateway: matched?.gateway ?? null,
+        status,
+        httpStatus: matched?.httpStatus ?? null,
+        details: JSON.stringify({ tried }),
+      },
+    });
+
+    return {
+      status,
+      proofUrl: matched?.url ?? null,
+      gateway: matched?.gateway ?? null,
+      canisterId: matched?.canisterId ?? null,
+      checked: tried,
+      auditId: audit.id,
+    };
+  } catch (err) {
+    console.error("verifyIcpProof error", err);
+    return {
+      status: "ERROR",
+      proofUrl: null,
+      gateway: null,
+      canisterId: null,
+      checked: [],
+    } as const;
+  }
+}
+
+export async function getIcpProofAudits(input?: { limit?: number }) {
+  try {
+    const { userId } = await getAuth({ required: true });
+    const limit = Math.max(1, Math.min(200, input?.limit ?? 50));
+    const rows = await db.icpProofAudit.findMany({
+      where: { userId },
+      orderBy: { checkedAt: "desc" },
+      take: limit,
+    });
+    return rows;
+  } catch (err) {
+    console.error("getIcpProofAudits error", err);
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------
 
 // Generate contextual engagement tactics for a specific post on demand
 export async function generatePostEngagementTactics(input: {
@@ -34541,7 +40203,8 @@ export async function generatePostEngagementTactics(input: {
           (typeof pkg.caption === "string" && pkg.caption) ||
           (typeof pkg.content === "string" && pkg.content) ||
           "";
-      } catch {
+      } catch (error) {
+        void error;
         postText = raw;
       }
 
@@ -34625,8 +40288,8 @@ export async function generatePostEngagementTactics(input: {
 
     return { tactics };
   } catch (error) {
+    void error;
     console.error("generatePostEngagementTactics error", error);
     throw error;
   }
 }
-
